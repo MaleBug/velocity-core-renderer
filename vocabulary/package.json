@@ -1,0 +1,4 @@
+{
+  "module": "../fesm2022/velocity-core-renderer-vocabulary.mjs",
+  "typings": "../types/velocity-core-renderer-vocabulary.d.ts"
+}

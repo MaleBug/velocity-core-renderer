@@ -1,0 +1,39 @@
+{
+  "name": "velocity-core-renderer",
+  "version": "0.1.0",
+  "description": "Field-definition-type renderers for the Velocity Core platform.",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/MaleBug/velocity-core-renderer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Bermwood/velocity-core-ui-admin.git",
+    "directory": "projects/velocity-core-renderer"
+  },
+  "peerDependencies": {
+    "@angular/common": "^21.2.0",
+    "@angular/core": "^21.2.0",
+    "@angular/forms": "^21.2.0",
+    "primeng": "^21.1.6",
+    "primeicons": "^7.0.0"
+  },
+  "dependencies": {
+    "tslib": "^2.3.0"
+  },
+  "sideEffects": false,
+  "module": "fesm2022/velocity-core-renderer.mjs",
+  "typings": "types/velocity-core-renderer.d.ts",
+  "exports": {
+    "./package.json": {
+      "default": "./package.json"
+    },
+    ".": {
+      "types": "./types/velocity-core-renderer.d.ts",
+      "default": "./fesm2022/velocity-core-renderer.mjs"
+    },
+    "./vocabulary": {
+      "types": "./types/velocity-core-renderer-vocabulary.d.ts",
+      "default": "./fesm2022/velocity-core-renderer-vocabulary.mjs"
+    }
+  },
+  "type": "module"
+}
