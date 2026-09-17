@@ -14,12 +14,12 @@ arrives through signal inputs, which is what makes it safe to render the same fi
 ## Install
 
 ```bash
-npm install git+https://github.com/MaleBug/velocity-core-renderer.git#v0.1.0
+npm install git+https://github.com/MaleBug/velocity-core-renderer.git#v0.2.0
 ```
 
 ```json
 "dependencies": {
-  "velocity-core-renderer": "git+https://github.com/MaleBug/velocity-core-renderer.git#v0.1.0"
+  "velocity-core-renderer": "git+https://github.com/MaleBug/velocity-core-renderer.git#v0.2.0"
 }
 ```
 
@@ -32,11 +32,11 @@ Pin a tag. Tags here are immutable: a fix ships as a new version, never as a mov
 
 ## Peer requirements
 
-| Package | Range |
-| --- | --- |
+| Package                                              | Range     |
+| ---------------------------------------------------- | --------- |
 | `@angular/common`, `@angular/core`, `@angular/forms` | `^21.2.0` |
-| `primeng` | `^21.1.6` |
-| `primeicons` | `^7.0.0` |
+| `primeng`                                            | `^21.1.6` |
+| `primeicons`                                         | `^7.0.0`  |
 
 The library is built in Angular's partial-Ivy mode, which is **one-directional**: an app on Angular
 21.2 or later can consume it; an app on an earlier version cannot, and fails at build time with a
@@ -89,14 +89,14 @@ export class ExampleComponent {
 
 ### `<vcr-field-input>`
 
-| Input | Type | Default | |
-| --- | --- | --- | --- |
-| `fieldType` | `string` | — | **Required.** A `FieldDefinitionType` name. |
-| `fieldConfig` | `string \| null` | `null` | The field's saved config, as the raw wire JSON string. |
-| `fieldKey` | `string` | `''` | Becomes the control's `id`/`name`. |
-| `label` | `string` | `''` | |
-| `showLabel` | `boolean` | `false` | Off by default — most consumers draw their own label. |
-| `required`, `disabled`, `invalid` | `boolean` | `false` | |
+| Input                             | Type             | Default |                                                        |
+| --------------------------------- | ---------------- | ------- | ------------------------------------------------------ |
+| `fieldType`                       | `string`         | —       | **Required.** A `FieldDefinitionType` name.            |
+| `fieldConfig`                     | `string \| null` | `null`  | The field's saved config, as the raw wire JSON string. |
+| `fieldKey`                        | `string`         | `''`    | Becomes the control's `id`/`name`.                     |
+| `label`                           | `string`         | `''`    |                                                        |
+| `showLabel`                       | `boolean`        | `false` | Off by default — most consumers draw their own label.  |
+| `required`, `disabled`, `invalid` | `boolean`        | `false` |                                                        |
 
 `value` is a two-way `model<string>()`. **Every field type reads and writes a string**, whatever the
 underlying control works in; the descriptor's codec handles the conversion.
@@ -107,16 +107,28 @@ renderer that does not declare it and for an unregistered field type.
 `fieldType` is **PascalCase** — `Text`, `Email`, `DatePicker`, `RadioButton`. This is what the
 backend has always stored. Lowercase spellings have never existed on the wire.
 
-## What v0.1.0 renders
+## What this renders
 
-| Field type | Control |
-| --- | --- |
-| `Text`, `Email`, `Phone`, `Url` | PrimeNG text input, typed per variant |
-| everything else | plain `<textarea>` fallback |
+Deliberately not headed with a version number: this table went stale the moment one was written
+into it, and the release notes are a better place to ask "since when".
 
-The fallback is deliberate, not an error state — an unregistered type stays editable. Eight further
-renderers (textarea, number, currency, checkbox, date, radio, select, media) exist in the admin app
-and have not been extracted yet.
+| Field type                      | Control                                         |
+| ------------------------------- | ----------------------------------------------- |
+| `Text`, `Email`, `Phone`, `Url` | PrimeNG text input, typed per variant           |
+| `Number`, `Decimal`             | `p-inputnumber`, seeded per variant             |
+| `Checkbox`                      | `p-checkbox` — one box, or a group of them      |
+| `RadioButton`                   | `p-radiobutton`                                 |
+| `Dropdown`                      | `p-select`, or `p-multiselect` in Multiple mode |
+| `DatePicker`                    | `p-datepicker`                                  |
+| everything else                 | plain `<textarea>` fallback                     |
+
+Retired wire types are registered too, so a field already saved under one keeps its renderer:
+`Date` and `DateTime` draw the date picker, `Boolean`, `MultiSelect` and `CheckboxGroup` draw
+checkboxes, and **`Select` draws radios** — it predates `Dropdown`, and repointing it would change
+what every field already saved as a `Select` draws.
+
+The fallback is deliberate, not an error state — an unregistered type stays editable. Three further
+renderers (textarea, currency, media) exist in the admin app and have not been extracted yet.
 
 `findFieldRenderer(fieldType)` returns `null` for an unregistered type, and
 `isFieldRendererRegistered(fieldType)` answers the same question as a boolean.

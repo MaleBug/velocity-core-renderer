@@ -1,7 +1,8 @@
 import * as _angular_core from '@angular/core';
-import { Type, InputSignal, ModelSignal, OutputEmitterRef } from '@angular/core';
+import { InputSignal, ModelSignal, OutputEmitterRef, Type } from '@angular/core';
 import { FieldDefinitionType } from 'velocity-core-renderer/vocabulary';
 export * from 'velocity-core-renderer/vocabulary';
+import * as velocity_core_renderer from 'velocity-core-renderer';
 
 /**
  * Primitives every field-input config model parses with.
@@ -203,6 +204,22 @@ declare function hasBlankChoiceValue(options: readonly FieldChoiceOption[]): boo
  * them on the way back in — so the editor says so rather than letting a choice quietly vanish.
  */
 declare function hasDuplicateChoiceValue(options: readonly FieldChoiceOption[]): boolean;
+/**
+ * True when two choices share a label.
+ *
+ * Their values differ, so nothing is dropped on the way in the way {@link parseChoiceOptions}
+ * drops a duplicate value — but the label is the whole of what the person choosing sees, and two
+ * rows reading `Active` give them no way to tell which one they picked.
+ *
+ * Compared case-insensitively, matching how {@link sortChoiceOptions} already orders these with
+ * `sensitivity: 'base'`: `Active` and `active` are the same word to a reader, and letting the pair
+ * through because of one capital would be a distinction only the database can see.
+ *
+ * Unlike a duplicate value this is an editor-only rule. A config already saved with duplicate
+ * labels keeps parsing and keeps rendering — both choices are still distinct and still selectable,
+ * so rejecting them at parse time would delete data to enforce a presentation rule.
+ */
+declare function hasDuplicateChoiceLabel(options: readonly FieldChoiceOption[]): boolean;
 
 /**
  * Which of the two controls a `Checkbox` field draws.
@@ -1147,6 +1164,115 @@ declare const RENDERER_BINDINGS: {
 };
 
 /**
+ * How a field's value crosses the wire.
+ *
+ * Every field value is a `string` to this API, whatever the field's declared type — see
+ * `CreatePageFieldValueRequest.value` ("Always a string on the wire, whatever the field
+ * definition's declared type"). These are the formats this app writes into that string and reads
+ * back out of it, in one place so a renderer and the control that authored its default can never
+ * disagree about what a date or a boolean looks like.
+ *
+ * Two rules hold throughout:
+ *
+ * 1. **Nothing here throws.** A stored value is data this app may not have written, so every
+ *    reader answers with null rather than raising and lets the caller say so.
+ * 2. **Round-trip stability.** `format(parse(s))` must equal `s` for any `s` these functions
+ *    themselves produced. `FieldInputComponent` writes a renderer's own output straight back, so
+ *    a codec that normalised its input differently on each pass would never settle.
+ *
+ * Dependency-free on purpose, following `general.util.ts`.
+ */
+/**
+ * `2026-09-11` — a date with no time and no timezone, built from the date's **local** parts.
+ *
+ * Local rather than `toISOString()`, which is UTC: a date-only field picked as the 1st in any
+ * negative-offset zone would store the 31st of the previous month, and the user would watch their
+ * date change on save. A date-only value has no instant to be correct about, so the only sensible
+ * reading is the one the user saw in the picker.
+ */
+declare function formatLocalDate(date: Date): string;
+/**
+ * `2026-09-11T14:30:00` — naive, with **no offset and no `Z`**.
+ *
+ * Matches the shape the platform's own timestamps already use (see {@link DATE_TIME_PATTERN}) and
+ * avoids the day shift described on {@link formatLocalDate}. The cost is that a value is only
+ * unambiguous alongside the zone it was entered in, which is the tradeoff the backend has already
+ * made for its own timestamps.
+ */
+declare function formatLocalDateTime(date: Date): string;
+/**
+ * The date a stored value means, or null.
+ *
+ * Tries the two shapes this app writes first, constructing through `new Date(y, m - 1, d, …)` so
+ * the parts are read as local — `new Date('2026-09-11')` would read the same text as UTC
+ * midnight and shift the day backwards in every negative-offset zone, which is the bug
+ * {@link formatLocalDate} exists to avoid.
+ *
+ * Anything else falls through to `new Date(raw)`, which is what loads a value carrying an offset
+ * (`2026-09-11T14:30:00Z`) written by another client. That path is lenient by design: refusing to
+ * display a value the platform itself stores would be worse than showing it in local time.
+ */
+declare function parseLocalDateish(raw: string): Date | null;
+/**
+ * Whether a PrimeNG date format names the day of the month.
+ *
+ * Lowercase `d` and `o` (day of year) are the only tokens that set a day — uppercase `D` is the
+ * day's *name*, which PrimeNG reads past without recording. See {@link parseDaylessDate} for why
+ * this question is worth asking.
+ */
+declare function dateFormatNamesDay(format: string): boolean;
+/**
+ * A date typed under a format that names no day — `yy` ("Year") and `MM yy` ("Month Year").
+ *
+ * ## Why this exists
+ *
+ * `p-datepicker` cannot read its own dayless formats back. Its parser leaves `day` (and `month`)
+ * unset, then builds `new Date(year, month - 1, day)` with those `-1`s and throws `'Invalid date'`
+ * when the result does not match what it was given. It defaults them only when `view === 'year'`,
+ * which is a *separate* setting a field is free not to be on — so typing `2026` into a Year-format
+ * field whose view is the default `'date'` throws, the picker sets its model to null, and the text
+ * is wiped the moment focus leaves. Supplying the missing parts here is what makes the format
+ * usable rather than display-only.
+ *
+ * The day is January 1st: a field showing only a year is a field whose day nobody chose, and the
+ * start of the period is the reading every other date-flooring convention takes.
+ *
+ * Null for anything that is not yet a complete answer, so a half-typed year commits nothing and
+ * leaves the value as it was — `2`, `20` and `202` are all on the way to `2026`.
+ */
+declare function parseDaylessDate(text: string, format: string): Date | null;
+/**
+ * `1234.5` — the number, plainly.
+ *
+ * No grouping, no currency symbol, no prefix or suffix: those are display config, and a stored
+ * `"1,234"` or `"$1,234.00"` is a number `Number()` cannot read back. Keeping the wire value bare
+ * is also what lets a currency field's ISO code change without rewriting stored amounts, and what
+ * keeps the value arithmetic-ready for the backend.
+ */
+declare function formatPlainNumber(value: number | null): string;
+/**
+ * The number a stored value means, or null.
+ *
+ * `Number` rather than `parseFloat`, so trailing junk is rejected outright instead of quietly
+ * yielding a prefix — `parseFloat('12abc')` is 12, which is not what the field holds.
+ * `Number('')` is 0, so the empty case is handled before the conversion.
+ */
+declare function parseFiniteNumber(raw: string): number | null;
+/**
+ * The boolean a stored value means, or null for one that says neither.
+ *
+ * The field's own `trueText`/`falseText` are checked first so a field configured with, say,
+ * `Active`/`Inactive` reads its own values back even if they collide with nothing in the courtesy
+ * lists. Comparison is case-insensitive on both: a value differing only in case is the same
+ * answer, and treating it as unreadable would be pedantry the user pays for.
+ *
+ * Null rather than false for an unreadable value, so a tri-state field can show "not set" and a
+ * binary one can decide for itself (see `CheckboxFieldConfig.triState`). A binary renderer that
+ * mapped an unreadable value to false would be asserting an answer nobody gave.
+ */
+declare function parseLooseBoolean(raw: string, trueText: string, falseText: string): boolean | null;
+
+/**
  * Draws a single-line text field.
  *
  * Serves four wire types — `Text`, `Email`, `Phone` and `Url` — which differ only in the
@@ -1247,13 +1373,388 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
 }
 
 /**
+ * Draws a numeric field.
+ *
+ * Serves `Number` and `Decimal`, which differ only in the fraction digits and step the registry
+ * seeds — not in what they accept, since the backend stores both as strings and this app should
+ * not invent a constraint the contract does not state.
+ *
+ * `min`, `max` and `step` are passed through as-is: PrimeNG's own inputs are typed
+ * `number | null | undefined`, so the config's nulls mean "no bound" without translation. Only
+ * the fraction digits and `size` need mapping, since those are `undefined`-shaped there and
+ * `null`-shaped here.
+ *
+ * The two negative-value settings are the exception to that pass-through, because `p-inputnumber`
+ * has neither: red is a class on this host, and the accounting brackets are an overlay drawn while
+ * the control is not focused. See `showsParenthesised`.
+ */
+declare class NumberFieldInputComponent implements FieldRenderer<NumberFieldConfig, number | null> {
+    readonly config: _angular_core.InputSignal<NumberFieldConfig>;
+    readonly value: _angular_core.ModelSignal<number | null>;
+    readonly fieldKey: _angular_core.InputSignal<string>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    /** Fires once the user leaves the control, *after* the field's rounding rule has been applied —
+        see {@link onBlur}. Enter also rounds, but does not emit: the caret is still in the box. */
+    readonly blurred: _angular_core.OutputEmitterRef<void>;
+    readonly inputId: _angular_core.Signal<string>;
+    /** `number | undefined` on `p-inputnumber`, where this config uses null for "leave it to the
+        locale". */
+    readonly minFractionDigits: _angular_core.Signal<number | undefined>;
+    /**
+     * The fraction digits the *control* is given — not the config's, while a rounding rule is set.
+     *
+     * `p-inputnumber` passes this to `Intl.NumberFormat` and parses the typed text back through it,
+     * so the cap is not display-only: the value it emits has already been rounded **half-up** at
+     * that precision, and at zero it refuses the decimal separator altogether. Leaving the cap in
+     * place therefore left `applyRounding` nothing to round — `Math.ceil` of a value Intl had
+     * already rounded is that same value, so `2.4` stayed `2` and only `2.5` and up ever moved.
+     * That is not the rule the field is configured for.
+     *
+     * So while a rule is active the control keeps every digit typed, and the precision is imposed
+     * once, on blur, by the rule itself.
+     *
+     * `FULL_PRECISION_FRACTION_DIGITS` rather than `undefined`: left unset, `Intl` applies its own
+     * default of three fraction digits for decimal style, so a field configured to round at four
+     * places would have a fourth digit no one could type.
+     */
+    readonly maxFractionDigits: _angular_core.Signal<number | undefined>;
+    /** `''` means "follow the browser", which `p-inputnumber` spells as `undefined`. */
+    readonly locale: _angular_core.Signal<string | undefined>;
+    readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
+    /** Zero is not negative, and neither is an empty control — `-0 < 0` is false, which is the
+        answer wanted here. */
+    readonly isNegative: _angular_core.Signal<boolean>;
+    readonly showsNegativeInRed: _angular_core.Signal<boolean>;
+    /** Whether the control has the caret. Tracked only so the accounting form can stand down while
+        the number is being edited — see `showsParenthesised`. */
+    private readonly focused;
+    /**
+     * Whether to draw the accounting form over the control.
+     *
+     * `p-inputnumber` has no parenthesis format of its own — `Intl.NumberFormat`'s accounting sign
+     * belongs to currency style, which this control is not in — so the form is drawn as an overlay
+     * rather than configured. Not while focused: what is under the overlay is the editable number,
+     * and `(1,234.00)` is not something that can be typed back.
+     */
+    readonly showsParenthesised: _angular_core.Signal<boolean>;
+    /**
+     * The value in accounting form, matching what `p-inputnumber` would have drawn.
+     *
+     * Formatted from the same config members the control is given — locale, grouping and fraction
+     * digits — so the overlay cannot disagree with the number beneath it. Prefix and suffix go
+     * inside the brackets, which is where accounting puts them: `($1,234.00)`.
+     *
+     * `Intl.NumberFormat` throws on a fraction-digit range that runs backwards. The config editor
+     * rejects one, but a config written by hand or by another client can still hold it, so the
+     * plain form is the fallback rather than an exception the renderer cannot recover from.
+     */
+    readonly parenthesisedValue: _angular_core.Signal<string>;
+    setFocused(next: boolean): void;
+    /**
+     * Leaves the control, applying the field's rounding rule.
+     *
+     * On blur rather than on every keystroke: rounding as the number is typed rewrites the box under
+     * the caret — a `Round up` field with no decimal places would turn `2.4` into `3` before the `4`
+     * had settled, and there would be no way to type `2.4` at all on the way to `2.45`.
+     */
+    onBlur(): void;
+    /**
+     * Rounds on Enter as well as on blur.
+     *
+     * Without it the rule looks broken to anyone who types a value and reads the box without
+     * clicking away — which is how it is naturally tested, and how it was in fact reported. Enter is
+     * already "I am done with this field" everywhere else in these forms.
+     */
+    onKeyDown(event: KeyboardEvent): void;
+    private commitRounding;
+    /** `p-inputnumber` emits `undefined` as well as null for a cleared control, and the wire value
+        for a number is null either way. */
+    onValueChange(next: number | null | undefined): void;
+    /**
+     * The value rounded the way the config asks, clamped back into the field's own range.
+     *
+     * The clamp is not belt-and-braces: rounding `9.4` up in a field capped at `9.5` would otherwise
+     * produce `10`, a value the same config declares out of bounds — a setting inventing data its
+     * neighbour rejects.
+     */
+    private applyRounding;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<NumberFieldInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<NumberFieldInputComponent, "vcr-number-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
+}
+
+/**
+ * Draws a checkbox field — one box, or a group of them.
+ *
+ * Which it draws comes from `CheckboxFieldConfig.checkboxType`, since `Checkbox` is a single field
+ * type an author flips between modes rather than two types to choose between. The two markups
+ * share nothing but the element, so the template branches once at the top rather than trying to
+ * parameterise one into the other.
+ *
+ * ## The tri-state cycle (`'single'`)
+ *
+ * PrimeNG 21 has no `TriStateCheckbox`, so the third state is built here. The box is bound as an
+ * ordinary binary one and its emitted boolean is **ignored**: {@link onSingleChange} advances this
+ * renderer's own `null -> true -> false -> null` cycle instead, and `indeterminate` is bound back
+ * from the value. That works because the bound value genuinely changes at each step — `Checkbox`
+ * clears its internal indeterminate flag on the first click and re-reads the input only when it
+ * changes, which every step of the cycle does.
+ *
+ * ## The array model (`'group'`)
+ *
+ * Each box is a `p-checkbox` in its **non-binary** mode, where PrimeNG treats the bound model as
+ * the list of ticked values and adds to or filters it on each click. That is why
+ * {@link groupValue} never yields null: the filter runs against the current model before anything
+ * else, so a null would throw rather than begin a fresh selection.
+ */
+declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxFieldConfig, CheckboxFieldValue> {
+    readonly config: _angular_core.InputSignal<CheckboxFieldConfig>;
+    readonly value: _angular_core.ModelSignal<CheckboxFieldValue>;
+    readonly fieldKey: _angular_core.InputSignal<string>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    readonly isGroup: _angular_core.Signal<boolean>;
+    /** The control's `id` in single mode, and the stem of each box's id in group mode. */
+    readonly inputId: _angular_core.Signal<string>;
+    readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
+    /** The boxes in the order `sortChoices` asks for, in group mode. Only the drawing order changes:
+        a stored selection is a set of values and does not depend on it. */
+    readonly options: _angular_core.Signal<readonly velocity_core_renderer.FieldChoiceOption[]>;
+    /**
+     * The value read as this mode expects it.
+     *
+     * Both narrow defensively rather than casting. The facade always decodes through the codec, so
+     * the shape should match the mode — but an author flipping `checkboxType` changes what the
+     * config means without changing what is stored, and a renderer that threw on that would take the
+     * config form down with it.
+     */
+    readonly singleValue: _angular_core.Signal<boolean | null>;
+    readonly groupValue: _angular_core.Signal<string[]>;
+    readonly isChecked: _angular_core.Signal<boolean>;
+    /** Only ever true on a tri-state single box: a group has no third state to show. */
+    readonly isIndeterminate: _angular_core.Signal<boolean>;
+    readonly checkboxIcon: _angular_core.Signal<string | undefined>;
+    /**
+     * Whether the selection breaks the configured bounds, in group mode.
+     *
+     * Shown rather than enforced — the bounds are advisory (see `CheckboxFieldConfig`), and a control
+     * that silently refused a click would be a worse way to say so than a message.
+     */
+    readonly boundsError: _angular_core.Signal<string>;
+    optionId(value: string): string;
+    /**
+     * Advances the single box's value.
+     *
+     * The event is deliberately unused. For a tri-state field the checkbox can only report two
+     * states, so its boolean would collapse the cycle; for a binary one the cycle below reduces to
+     * the same two values anyway, so one path serves both and there is no branch to get wrong.
+     */
+    onSingleChange(): void;
+    /** PrimeNG hands back the new array; the empty list is what "nothing ticked" means. */
+    onGroupChange(next: string[] | null | undefined): void;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<CheckboxFieldInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<CheckboxFieldInputComponent, "vcr-checkbox-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
+}
+
+/**
+ * Draws a group of radio buttons, for the `RadioButton` type.
+ *
+ * `[name]` is bound to the field key on every button so two radio groups on one page — a
+ * realistic arrangement on the page-content screen — do not share browser-level exclusivity and
+ * silently deselect each other.
+ *
+ * The Clear button exists because radio buttons have no native way to deselect: without it a user
+ * who picks a value by mistake cannot undo it, and the field goes from empty to permanently
+ * answered on the first click. Offered only when `allowClear` is set — see `RadioFieldConfig`.
+ */
+declare class RadioFieldInputComponent implements FieldRenderer<RadioFieldConfig, string | null> {
+    readonly config: _angular_core.InputSignal<RadioFieldConfig>;
+    readonly value: _angular_core.ModelSignal<string | null>;
+    readonly fieldKey: _angular_core.InputSignal<string>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    /** The group's shared `name`, and the stem of each button's own id. */
+    readonly groupName: _angular_core.Signal<string>;
+    /** The choices in the order `sortChoices` asks for. Computed rather than sorted in the template,
+        so the array identity only changes when the config does. */
+    readonly options: _angular_core.Signal<readonly velocity_core_renderer.FieldChoiceOption[]>;
+    readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
+    readonly canClear: _angular_core.Signal<boolean>;
+    optionId(value: string): string;
+    onValueChange(next: string | null | undefined): void;
+    clear(): void;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<RadioFieldInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<RadioFieldInputComponent, "vcr-radio-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
+}
+
+/**
+ * Draws a dropdown, for the `Dropdown` type — `p-select` for one pick, `p-multiselect` for many.
+ *
+ * The options-based counterpart to `RadioFieldInputComponent`, for the lists radio buttons cannot
+ * carry: fifty countries drawn as fifty radio buttons is the case this exists for. Which of the
+ * two controls is drawn is `SelectFieldConfig.selectionMode`, and because the two hold different
+ * *shapes* of value the codec in `selectFieldRenderer` reads that member too.
+ *
+ * No Clear button of its own, unlike the radio renderer: both controls have a native clear icon,
+ * offered by `SelectFieldConfig.showClear`.
+ */
+declare class SelectFieldInputComponent implements FieldRenderer<SelectFieldConfig, SelectFieldValue> {
+    readonly config: _angular_core.InputSignal<SelectFieldConfig>;
+    readonly value: _angular_core.ModelSignal<SelectFieldValue>;
+    readonly fieldKey: _angular_core.InputSignal<string>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    /** The control's own id, so the facade's `<label for>` points at it. Same derivation as every
+        other renderer of a single control. */
+    readonly inputId: _angular_core.Signal<string>;
+    /**
+     * The choices in the order `sortChoices` asks for.
+     *
+     * Computed rather than sorted in the template, so the array identity only changes when the
+     * config does — a fresh array per read would be a new input value on every change-detection
+     * pass, which for an `OnPush` child is an endless re-render.
+     *
+     * Copied because `sortChoiceOptions` answers `readonly`, which both PrimeNG controls reject:
+     * their `options` input is a mutable `any[]`. The copy costs nothing here since the `computed`
+     * memoises it, and it is the honest place to drop the guarantee — `RadioFieldInputComponent`
+     * never needs to, because it iterates the array itself rather than handing it to a control.
+     */
+    readonly options: _angular_core.Signal<FieldChoiceOption[]>;
+    readonly isMultiple: _angular_core.Signal<boolean>;
+    readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
+    /** `''` means "leave PrimeNG's own default", which an empty string would instead overwrite with
+        a blank. Same translation `primeSize` makes. */
+    readonly placeholder: _angular_core.Signal<string | undefined>;
+    readonly filterPlaceholder: _angular_core.Signal<string | undefined>;
+    /** The `'single'` value, ignoring an array left by a mode switch under stored data. */
+    readonly singleValue: _angular_core.Signal<string | null>;
+    /**
+     * The `'multiple'` value — **never null**.
+     *
+     * `p-multiselect` derives its next value as `modelValue().filter(...)`, so deselecting an option
+     * against a null model throws. The empty array is the honest reading of "nothing picked" here
+     * anyway, exactly as it is for the checkbox group.
+     *
+     * The array is passed through rather than copied: the control builds a fresh array on every
+     * change (`filter`, or a spread) and never writes into the one it was given, so sharing the
+     * reference with `FieldInputComponent.decoded` cannot corrupt that computed's cached value.
+     */
+    readonly multipleValue: _angular_core.Signal<string[]>;
+    onSingleChange(next: string | null | undefined): void;
+    onMultipleChange(next: string[] | null | undefined): void;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<SelectFieldInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<SelectFieldInputComponent, "vcr-select-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
+}
+
+/**
+ * Draws a date, or a date and time, for the `DatePicker` type — `showTime` decides which.
+ *
+ * `appendTo="body"` because this renderer is used inside `p-dialog` on the page-content screen,
+ * where an in-flow overlay would be clipped by the dialog — the same binding every `p-select` in
+ * this app uses.
+ *
+ * Note there is no locale setting: `p-datepicker` has no `locale` input, and month and day names
+ * come from PrimeNG's global translation, which `app.config.ts` does not configure. The config
+ * editor deliberately does not offer one.
+ */
+declare class DateFieldInputComponent implements FieldRenderer<DateFieldConfig, DateFieldValue> {
+    readonly config: _angular_core.InputSignal<DateFieldConfig>;
+    readonly value: _angular_core.ModelSignal<DateFieldValue>;
+    readonly fieldKey: _angular_core.InputSignal<string>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    readonly inputId: _angular_core.Signal<string>;
+    /** Whether the caret is in the picker's own text input. See {@link displayValue}. */
+    private readonly editing;
+    /** The picker itself, so {@link onTextInput} can correct the value it parsed. */
+    private readonly picker;
+    /** Whether the configured format names a day, and so is one `p-datepicker` can parse back from
+        typed text on its own. See {@link onTextInput}. */
+    private readonly namesDay;
+    /**
+     * What `p-datepicker` is actually bound to: {@link value}, except while the user is typing.
+     *
+     * ## The problem this solves
+     *
+     * `p-datepicker` re-renders its input from the model on *every* write it receives —
+     * `writeControlValue` calls `updateInputfield()` unconditionally — and it parses what has been
+     * typed on every keystroke, pushing the result out through `ngModelChange`. Binding `value()`
+     * straight back in therefore feeds the user's own half-typed date back at them, reformatted.
+     *
+     * Typing a four-digit year is where that bites. At `12/25/20` the picker parses a real date in
+     * the year 20, emits it, and the echo repaints the input as `12/25/0020` — moving the caret and
+     * leaving the remaining `26` to land in the middle of a year the user never typed. Whatever that
+     * produces is then parsed on blur, where `onInputBlur` repaints the input from the model one last
+     * time and the value appears to have been erased.
+     *
+     * ## Why holding the value back is the fix
+     *
+     * The picker keeps its own parse of the text while it is focused, so suppressing the echo costs
+     * nothing: `ngModelChange` still fires on every keystroke and {@link value} still tracks it, so
+     * the wire value is never stale. Only the *input's text* is left alone, which is the one thing
+     * the user is editing.
+     *
+     * Re-synced on blur so a value the field itself normalises — or one changed from elsewhere while
+     * the input happened to be focused — still reaches the control.
+     */
+    readonly displayValue: _angular_core.WritableSignal<DateFieldValue>;
+    constructor();
+    onFocus(): void;
+    onBlur(): void;
+    /**
+     * Reads a date the picker's own parser cannot, for the formats that name no day.
+     *
+     * `p-datepicker` throws on its own `yy` and `MM yy` formats unless `view` is `'year'` — see
+     * {@link parseDaylessDate} — and answers a throw by setting its model to null, which is what
+     * emptied the field on blur. This runs after that: `onUserInput` emits `onInput` as its last
+     * step, so whatever it decided has already happened and can be corrected here.
+     *
+     * Corrected through the picker's own {@link DatePicker.updateModel} rather than by setting
+     * {@link value} directly, because both halves have to agree. `updateModel` sets the control's
+     * internal value *and* emits through `ngModelChange`, so the value this renderer publishes and
+     * the value the control repaints its input from on blur end up the same date. Writing only ours
+     * would leave the control still holding null, and blur would blank the text all over again.
+     *
+     * It deliberately does not touch the input's text, so the caret stays where the user put it.
+     */
+    onTextInput(event: Event): void;
+    /**
+     * The bounds as `Date`s, or undefined for "no bound".
+     *
+     * Each edge is the tighter of the two settings that can bound it: the fixed date from
+     * `minDate`/`maxDate`, and today from `dateLimit`. They narrow rather than override — a field
+     * limited to future dates and also bounded at `2027-01-01` means both, and taking whichever was
+     * set last would silently let one of the two through.
+     *
+     * Computed rather than built inline so the identity is stable across change-detection passes —
+     * a fresh `Date` per read would be a new input value every pass, and `p-datepicker` re-renders
+     * its whole panel when `minDate` changes. That also fixes "today" for as long as the config is
+     * unchanged, which is what a calendar left open across midnight should do.
+     */
+    readonly minDate: _angular_core.Signal<Date | undefined>;
+    readonly maxDate: _angular_core.Signal<Date | undefined>;
+    /** A fixed bound, or null when the config has none — or when the Date Range switch is off, which
+        is what makes that switch a setting rather than a way of hiding two inputs. */
+    private fixedBound;
+    /** `p-datepicker` emits undefined when cleared; null is this field's "no value". */
+    onValueChange(next: DateFieldValue | undefined): void;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<DateFieldInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<DateFieldInputComponent, "vcr-date-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
+}
+
+/**
  * Which renderer draws which `fieldType`.
  *
- * **Spike slice** — the text kind only. The full registry in the admin app carries nine kinds
- * across nineteen wire types; this one exists to prove the packaging chain end to end, so it
- * carries the four wire types that share the text renderer and nothing else. An unregistered type
- * is not an error: {@link FieldInputComponent} falls back to a plain textarea, exactly as it does
- * in the admin today.
+ * Six of the nine kinds, across sixteen wire types. Still absent, and each for its own reason:
+ * `textarea` and `currency` have not been extracted from the admin app yet, and `media` draws a
+ * placeholder that edits nothing, so it is worth nothing to a consumer until the media picker
+ * itself moves. An unregistered type is not an error: {@link FieldInputComponent} falls back to a
+ * plain textarea, exactly as it does in the admin today.
  *
  * Note what is absent compared with the admin's copy: `editor`. Config editors are authoring UI
  * and stay in that app — see the note in `field-renderer-contract.ts`.
@@ -1262,6 +1763,10 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
  * fails to compile — the drift this package exists to prevent, caught at the registration site.
  * `Partial` because the page-widget types are deliberately never registered here: nothing in this
  * package can draw one.
+ *
+ * Several types deliberately share one renderer, differing only in the config seeded below —
+ * `Text`/`Email`/`Phone`/`Url`, `Number`/`Decimal`, and `DatePicker` with the two retired date
+ * types at the end of the map. See `FieldRendererKind`.
  */
 declare const FIELD_DEFINITION_TYPE_RENDERERS: Partial<Record<FieldDefinitionType, ErasedFieldRendererDescriptor>>;
 /**
@@ -1284,6 +1789,11 @@ declare function isFieldRendererRegistered(fieldType: string): boolean;
  * calling one of these with different seed config, with no new component and no package release.
  */
 declare function textFieldRenderer(overrides?: Partial<TextFieldConfig>): ErasedFieldRendererDescriptor;
+declare function numberFieldRenderer(overrides?: Partial<NumberFieldConfig>): ErasedFieldRendererDescriptor;
+declare function checkboxFieldRenderer(overrides?: Partial<CheckboxFieldConfig>): ErasedFieldRendererDescriptor;
+declare function radioFieldRenderer(overrides?: Partial<RadioFieldConfig>): ErasedFieldRendererDescriptor;
+declare function selectFieldRenderer(overrides?: Partial<SelectFieldConfig>): ErasedFieldRendererDescriptor;
+declare function dateFieldRenderer(overrides?: Partial<DateFieldConfig>): ErasedFieldRendererDescriptor;
 
 /**
  * Renders the right control for a field's value, whatever its `fieldType`.
@@ -1385,5 +1895,5 @@ declare class FieldInputComponent {
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
 }
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, clearedCheckboxModeSettings, collectExtras, eraseFieldRenderer, findFieldRenderer, hasBlankChoiceValue, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, sortChoiceOptions, textFieldRenderer, toFieldConfigJson };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, toFieldConfigJson };
 export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, SelectFieldConfig, SelectFieldValue, SelectMode, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };

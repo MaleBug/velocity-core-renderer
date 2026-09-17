@@ -1,6 +1,6 @@
 export * from 'velocity-core-renderer/vocabulary';
 import * as i0 from '@angular/core';
-import { input, model, output, computed, ChangeDetectionStrategy, Component, reflectComponentType, viewChild, ViewContainerRef, effect, inputBinding, outputBinding } from '@angular/core';
+import { input, model, output, computed, ChangeDetectionStrategy, Component, signal, viewChild, effect, untracked, reflectComponentType, ViewContainerRef, inputBinding, outputBinding } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import * as i1 from '@angular/forms';
 import { FormsModule } from '@angular/forms';
@@ -11,6 +11,14 @@ import { InputIcon } from 'primeng/inputicon';
 import { InputMask } from 'primeng/inputmask';
 import { InputText } from 'primeng/inputtext';
 import { Password } from 'primeng/password';
+import { InputNumber } from 'primeng/inputnumber';
+import { Checkbox } from 'primeng/checkbox';
+import * as i2 from 'primeng/button';
+import { ButtonModule } from 'primeng/button';
+import { RadioButton } from 'primeng/radiobutton';
+import { MultiSelect } from 'primeng/multiselect';
+import { Select } from 'primeng/select';
+import { DatePicker } from 'primeng/datepicker';
 import { Textarea } from 'primeng/textarea';
 
 /**
@@ -173,6 +181,27 @@ function hasDuplicateChoiceValue(options) {
     const values = options.map((option) => option.value.trim()).filter((value) => value !== '');
     return new Set(values).size !== values.length;
 }
+/**
+ * True when two choices share a label.
+ *
+ * Their values differ, so nothing is dropped on the way in the way {@link parseChoiceOptions}
+ * drops a duplicate value — but the label is the whole of what the person choosing sees, and two
+ * rows reading `Active` give them no way to tell which one they picked.
+ *
+ * Compared case-insensitively, matching how {@link sortChoiceOptions} already orders these with
+ * `sensitivity: 'base'`: `Active` and `active` are the same word to a reader, and letting the pair
+ * through because of one capital would be a distinction only the database can see.
+ *
+ * Unlike a duplicate value this is an editor-only rule. A config already saved with duplicate
+ * labels keeps parsing and keeps rendering — both choices are still distinct and still selectable,
+ * so rejecting them at parse time would delete data to enforce a presentation rule.
+ */
+function hasDuplicateChoiceLabel(options) {
+    const labels = options
+        .map((option) => option.label.trim().toLowerCase())
+        .filter((label) => label !== '');
+    return new Set(labels).size !== labels.length;
+}
 
 /**
  * Primitives every field-input config model parses with.
@@ -299,6 +328,269 @@ function readRecord(raw) {
         return null;
     }
     return raw;
+}
+
+/**
+ * How a field's value crosses the wire.
+ *
+ * Every field value is a `string` to this API, whatever the field's declared type — see
+ * `CreatePageFieldValueRequest.value` ("Always a string on the wire, whatever the field
+ * definition's declared type"). These are the formats this app writes into that string and reads
+ * back out of it, in one place so a renderer and the control that authored its default can never
+ * disagree about what a date or a boolean looks like.
+ *
+ * Two rules hold throughout:
+ *
+ * 1. **Nothing here throws.** A stored value is data this app may not have written, so every
+ *    reader answers with null rather than raising and lets the caller say so.
+ * 2. **Round-trip stability.** `format(parse(s))` must equal `s` for any `s` these functions
+ *    themselves produced. `FieldInputComponent` writes a renderer's own output straight back, so
+ *    a codec that normalised its input differently on each pass would never settle.
+ *
+ * Dependency-free on purpose, following `general.util.ts`.
+ */
+/** A date-only value: `2026-09-11`. */
+const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+/**
+ * A naive date and time: `2026-09-11T14:30:00`, with optional seconds and fractional seconds,
+ * and a space tolerated in place of the `T`.
+ *
+ * Fractional seconds are accepted but never produced — the backend emits them
+ * (`CustomObjectFieldValueResponse.createdDate` is documented as `"2026-08-31T15:13:26.9627647"`)
+ * and a value copied from one field into another should still load. They are dropped on the way
+ * in, since no renderer here edits below the second.
+ */
+const DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/;
+/** Two digits, for the formatters below. */
+function pad(value) {
+    return String(value).padStart(2, '0');
+}
+/**
+ * `2026-09-11` — a date with no time and no timezone, built from the date's **local** parts.
+ *
+ * Local rather than `toISOString()`, which is UTC: a date-only field picked as the 1st in any
+ * negative-offset zone would store the 31st of the previous month, and the user would watch their
+ * date change on save. A date-only value has no instant to be correct about, so the only sensible
+ * reading is the one the user saw in the picker.
+ */
+function formatLocalDate(date) {
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+/**
+ * `2026-09-11T14:30:00` — naive, with **no offset and no `Z`**.
+ *
+ * Matches the shape the platform's own timestamps already use (see {@link DATE_TIME_PATTERN}) and
+ * avoids the day shift described on {@link formatLocalDate}. The cost is that a value is only
+ * unambiguous alongside the zone it was entered in, which is the tradeoff the backend has already
+ * made for its own timestamps.
+ */
+function formatLocalDateTime(date) {
+    const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    return `${formatLocalDate(date)}T${time}`;
+}
+/**
+ * The date a stored value means, or null.
+ *
+ * Tries the two shapes this app writes first, constructing through `new Date(y, m - 1, d, …)` so
+ * the parts are read as local — `new Date('2026-09-11')` would read the same text as UTC
+ * midnight and shift the day backwards in every negative-offset zone, which is the bug
+ * {@link formatLocalDate} exists to avoid.
+ *
+ * Anything else falls through to `new Date(raw)`, which is what loads a value carrying an offset
+ * (`2026-09-11T14:30:00Z`) written by another client. That path is lenient by design: refusing to
+ * display a value the platform itself stores would be worse than showing it in local time.
+ */
+function parseLocalDateish(raw) {
+    const value = raw.trim();
+    if (value === '') {
+        return null;
+    }
+    const dateTime = DATE_TIME_PATTERN.exec(value);
+    if (dateTime !== null) {
+        const [, year, month, day, hour, minute, second] = dateTime;
+        return toValidDate(new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), 
+        // Absent seconds are a legal shortening of the shape, not a malformed value.
+        second === undefined ? 0 : Number(second)));
+    }
+    const dateOnly = DATE_PATTERN.exec(value);
+    if (dateOnly !== null) {
+        const [, year, month, day] = dateOnly;
+        return toValidDate(new Date(Number(year), Number(month) - 1, Number(day)));
+    }
+    return toValidDate(new Date(value));
+}
+/**
+ * The date, or null if it is not a real one.
+ *
+ * Both constructors above can produce an Invalid Date from text that matched: `2026-02-31` parses
+ * cleanly as digits and is not a day. An Invalid Date is worse than null downstream, because it
+ * renders as "Invalid Date" in the control rather than as empty.
+ */
+function toValidDate(date) {
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+/**
+ * The month names `p-datepicker` draws, in its own order.
+ *
+ * English because that is what the control itself shows: month names come from PrimeNG's global
+ * translation, which `app.config.ts` does not configure — see the note on `DateFieldInputComponent`.
+ * Short names are the first three letters, which is how PrimeNG's own defaults are built.
+ */
+const MONTH_NAMES = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+];
+/** A PrimeNG date format with its quoted literals removed, so a letter inside `'on the'` is not
+    read as a token. */
+function formatTokens(format) {
+    return format.replace(/'[^']*'/g, '');
+}
+/**
+ * Whether a PrimeNG date format names the day of the month.
+ *
+ * Lowercase `d` and `o` (day of year) are the only tokens that set a day — uppercase `D` is the
+ * day's *name*, which PrimeNG reads past without recording. See {@link parseDaylessDate} for why
+ * this question is worth asking.
+ */
+function dateFormatNamesDay(format) {
+    return /[do]/.test(formatTokens(format));
+}
+/** Whether a PrimeNG date format names the month, as a number (`m`) or a name (`M`). */
+function dateFormatNamesMonth(format) {
+    return /[mM]/.test(formatTokens(format));
+}
+/**
+ * A date typed under a format that names no day — `yy` ("Year") and `MM yy` ("Month Year").
+ *
+ * ## Why this exists
+ *
+ * `p-datepicker` cannot read its own dayless formats back. Its parser leaves `day` (and `month`)
+ * unset, then builds `new Date(year, month - 1, day)` with those `-1`s and throws `'Invalid date'`
+ * when the result does not match what it was given. It defaults them only when `view === 'year'`,
+ * which is a *separate* setting a field is free not to be on — so typing `2026` into a Year-format
+ * field whose view is the default `'date'` throws, the picker sets its model to null, and the text
+ * is wiped the moment focus leaves. Supplying the missing parts here is what makes the format
+ * usable rather than display-only.
+ *
+ * The day is January 1st: a field showing only a year is a field whose day nobody chose, and the
+ * start of the period is the reading every other date-flooring convention takes.
+ *
+ * Null for anything that is not yet a complete answer, so a half-typed year commits nothing and
+ * leaves the value as it was — `2`, `20` and `202` are all on the way to `2026`.
+ */
+function parseDaylessDate(text, format) {
+    const numbers = text.trim().match(/\d+/g);
+    if (numbers === null) {
+        return null;
+    }
+    // Last rather than first: every dayless format this app offers ends with the year, and a
+    // leading number in `MM yy` would be the month.
+    const yearText = numbers[numbers.length - 1];
+    // Exactly four, so nothing is committed while the year is still being typed. A two-digit year
+    // is deliberately not expanded: `26` would have to guess a century, and guessing one silently
+    // is how a field ends up holding 1926.
+    if (yearText.length !== 4) {
+        return null;
+    }
+    const month = dateFormatNamesMonth(format) ? readMonth(text, numbers) : 1;
+    return month === null ? null : toValidDate(new Date(Number(yearText), month - 1, 1));
+}
+/** The 1-based month named in `text`, or null when it names none yet. */
+function readMonth(text, numbers) {
+    const lower = text.toLowerCase();
+    // Longest first, so 'March' is not matched as 'Mar' with 'ch' left over — and so the name wins
+    // over a bare number for a format that shows both.
+    const named = [...MONTH_NAMES]
+        .map((name, index) => ({ name: name.toLowerCase(), month: index + 1 }))
+        .sort((left, right) => right.name.length - left.name.length)
+        .find((entry) => lower.includes(entry.name) || lower.includes(entry.name.slice(0, 3)));
+    if (named !== undefined) {
+        return named.month;
+    }
+    // A numeric month, which is the first number when the year is the last.
+    if (numbers.length < 2) {
+        return null;
+    }
+    const month = Number(numbers[0]);
+    return month >= 1 && month <= 12 ? month : null;
+}
+/**
+ * `1234.5` — the number, plainly.
+ *
+ * No grouping, no currency symbol, no prefix or suffix: those are display config, and a stored
+ * `"1,234"` or `"$1,234.00"` is a number `Number()` cannot read back. Keeping the wire value bare
+ * is also what lets a currency field's ISO code change without rewriting stored amounts, and what
+ * keeps the value arithmetic-ready for the backend.
+ */
+function formatPlainNumber(value) {
+    return value === null ? '' : String(value);
+}
+/**
+ * The number a stored value means, or null.
+ *
+ * `Number` rather than `parseFloat`, so trailing junk is rejected outright instead of quietly
+ * yielding a prefix — `parseFloat('12abc')` is 12, which is not what the field holds.
+ * `Number('')` is 0, so the empty case is handled before the conversion.
+ */
+function parseFiniteNumber(raw) {
+    const value = raw.trim();
+    if (value === '') {
+        return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+/**
+ * Spellings of true and false accepted in addition to a checkbox field's own configured text.
+ *
+ * A courtesy, not a contract: a boolean value in this platform may have been written by a form
+ * that spelled it `1`, an import that spelled it `Yes`, or a developer testing with `on`. Reading
+ * all of them costs nothing and is much better than showing an unchecked box for a value that
+ * plainly says yes. Writing always uses the field's configured text, so a value only ever moves
+ * *towards* the configured spelling.
+ */
+const TRUE_SPELLINGS = ['true', '1', 'yes', 'y', 'on', 'checked'];
+const FALSE_SPELLINGS = ['false', '0', 'no', 'n', 'off', 'unchecked'];
+/**
+ * The boolean a stored value means, or null for one that says neither.
+ *
+ * The field's own `trueText`/`falseText` are checked first so a field configured with, say,
+ * `Active`/`Inactive` reads its own values back even if they collide with nothing in the courtesy
+ * lists. Comparison is case-insensitive on both: a value differing only in case is the same
+ * answer, and treating it as unreadable would be pedantry the user pays for.
+ *
+ * Null rather than false for an unreadable value, so a tri-state field can show "not set" and a
+ * binary one can decide for itself (see `CheckboxFieldConfig.triState`). A binary renderer that
+ * mapped an unreadable value to false would be asserting an answer nobody gave.
+ */
+function parseLooseBoolean(raw, trueText, falseText) {
+    const value = raw.trim().toLowerCase();
+    if (value === '') {
+        return null;
+    }
+    if (trueText.trim() !== '' && value === trueText.trim().toLowerCase()) {
+        return true;
+    }
+    if (falseText.trim() !== '' && value === falseText.trim().toLowerCase()) {
+        return false;
+    }
+    if (TRUE_SPELLINGS.includes(value)) {
+        return true;
+    }
+    if (FALSE_SPELLINGS.includes(value)) {
+        return false;
+    }
+    return null;
 }
 
 /**
@@ -1239,13 +1531,622 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
         }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], blurred: [{ type: i0.Output, args: ["blurred"] }] } });
 
 /**
+ * As many fraction digits as the control will hold, for the case where its own rounding must not
+ * run before the field's. Twenty is `Intl.NumberFormat`'s ceiling for `minimumFractionDigits` and
+ * past the precision a JavaScript number carries, so half-up rounding at it cannot bite.
+ */
+const FULL_PRECISION_FRACTION_DIGITS = 20;
+/**
+ * Draws a numeric field.
+ *
+ * Serves `Number` and `Decimal`, which differ only in the fraction digits and step the registry
+ * seeds — not in what they accept, since the backend stores both as strings and this app should
+ * not invent a constraint the contract does not state.
+ *
+ * `min`, `max` and `step` are passed through as-is: PrimeNG's own inputs are typed
+ * `number | null | undefined`, so the config's nulls mean "no bound" without translation. Only
+ * the fraction digits and `size` need mapping, since those are `undefined`-shaped there and
+ * `null`-shaped here.
+ *
+ * The two negative-value settings are the exception to that pass-through, because `p-inputnumber`
+ * has neither: red is a class on this host, and the accounting brackets are an overlay drawn while
+ * the control is not focused. See `showsParenthesised`.
+ */
+class NumberFieldInputComponent {
+    config = input.required(...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    value = model(null, ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    /** Fires once the user leaves the control, *after* the field's rounding rule has been applied —
+        see {@link onBlur}. Enter also rounds, but does not emit: the caret is still in the box. */
+    blurred = output();
+    inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    /** `number | undefined` on `p-inputnumber`, where this config uses null for "leave it to the
+        locale". */
+    minFractionDigits = computed(() => this.config().minFractionDigits ?? undefined, ...(ngDevMode ? [{ debugName: "minFractionDigits" }] : /* istanbul ignore next */ []));
+    /**
+     * The fraction digits the *control* is given — not the config's, while a rounding rule is set.
+     *
+     * `p-inputnumber` passes this to `Intl.NumberFormat` and parses the typed text back through it,
+     * so the cap is not display-only: the value it emits has already been rounded **half-up** at
+     * that precision, and at zero it refuses the decimal separator altogether. Leaving the cap in
+     * place therefore left `applyRounding` nothing to round — `Math.ceil` of a value Intl had
+     * already rounded is that same value, so `2.4` stayed `2` and only `2.5` and up ever moved.
+     * That is not the rule the field is configured for.
+     *
+     * So while a rule is active the control keeps every digit typed, and the precision is imposed
+     * once, on blur, by the rule itself.
+     *
+     * `FULL_PRECISION_FRACTION_DIGITS` rather than `undefined`: left unset, `Intl` applies its own
+     * default of three fraction digits for decimal style, so a field configured to round at four
+     * places would have a fourth digit no one could type.
+     */
+    maxFractionDigits = computed(() => {
+        const config = this.config();
+        return config.roundingRule === 'none'
+            ? (config.maxFractionDigits ?? undefined)
+            : FULL_PRECISION_FRACTION_DIGITS;
+    }, ...(ngDevMode ? [{ debugName: "maxFractionDigits" }] : /* istanbul ignore next */ []));
+    /** `''` means "follow the browser", which `p-inputnumber` spells as `undefined`. */
+    locale = computed(() => this.config().locale || undefined, ...(ngDevMode ? [{ debugName: "locale" }] : /* istanbul ignore next */ []));
+    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** Zero is not negative, and neither is an empty control — `-0 < 0` is false, which is the
+        answer wanted here. */
+    isNegative = computed(() => {
+        const value = this.value();
+        return value !== null && value < 0;
+    }, ...(ngDevMode ? [{ debugName: "isNegative" }] : /* istanbul ignore next */ []));
+    showsNegativeInRed = computed(() => this.config().showNegativeInRed && this.isNegative(), ...(ngDevMode ? [{ debugName: "showsNegativeInRed" }] : /* istanbul ignore next */ []));
+    /** Whether the control has the caret. Tracked only so the accounting form can stand down while
+        the number is being edited — see `showsParenthesised`. */
+    focused = signal(false, ...(ngDevMode ? [{ debugName: "focused" }] : /* istanbul ignore next */ []));
+    /**
+     * Whether to draw the accounting form over the control.
+     *
+     * `p-inputnumber` has no parenthesis format of its own — `Intl.NumberFormat`'s accounting sign
+     * belongs to currency style, which this control is not in — so the form is drawn as an overlay
+     * rather than configured. Not while focused: what is under the overlay is the editable number,
+     * and `(1,234.00)` is not something that can be typed back.
+     */
+    showsParenthesised = computed(() => this.config().negativeFormat === 'parenthesis' && this.isNegative() && !this.focused(), ...(ngDevMode ? [{ debugName: "showsParenthesised" }] : /* istanbul ignore next */ []));
+    /**
+     * The value in accounting form, matching what `p-inputnumber` would have drawn.
+     *
+     * Formatted from the same config members the control is given — locale, grouping and fraction
+     * digits — so the overlay cannot disagree with the number beneath it. Prefix and suffix go
+     * inside the brackets, which is where accounting puts them: `($1,234.00)`.
+     *
+     * `Intl.NumberFormat` throws on a fraction-digit range that runs backwards. The config editor
+     * rejects one, but a config written by hand or by another client can still hold it, so the
+     * plain form is the fallback rather than an exception the renderer cannot recover from.
+     */
+    parenthesisedValue = computed(() => {
+        const config = this.config();
+        const value = this.value();
+        if (value === null) {
+            return '';
+        }
+        try {
+            const body = new Intl.NumberFormat(config.locale || undefined, {
+                useGrouping: config.useGrouping,
+                minimumFractionDigits: config.minFractionDigits ?? undefined,
+                maximumFractionDigits: config.maxFractionDigits ?? undefined,
+            }).format(Math.abs(value));
+            return `(${config.prefix}${body}${config.suffix})`;
+        }
+        catch {
+            return `(${config.prefix}${Math.abs(value)}${config.suffix})`;
+        }
+    }, ...(ngDevMode ? [{ debugName: "parenthesisedValue" }] : /* istanbul ignore next */ []));
+    setFocused(next) {
+        this.focused.set(next);
+    }
+    /**
+     * Leaves the control, applying the field's rounding rule.
+     *
+     * On blur rather than on every keystroke: rounding as the number is typed rewrites the box under
+     * the caret — a `Round up` field with no decimal places would turn `2.4` into `3` before the `4`
+     * had settled, and there would be no way to type `2.4` at all on the way to `2.45`.
+     */
+    onBlur() {
+        this.focused.set(false);
+        this.commitRounding();
+        // After `commitRounding`, never before: a consumer saving on this signal must see the rounded
+        // value. Emitting first would persist the number as typed and then round it only in the box,
+        // leaving the stored value and the displayed one disagreeing.
+        this.blurred.emit();
+    }
+    /**
+     * Rounds on Enter as well as on blur.
+     *
+     * Without it the rule looks broken to anyone who types a value and reads the box without
+     * clicking away — which is how it is naturally tested, and how it was in fact reported. Enter is
+     * already "I am done with this field" everywhere else in these forms.
+     */
+    onKeyDown(event) {
+        if (event.key === 'Enter') {
+            this.commitRounding();
+        }
+    }
+    commitRounding() {
+        const rounded = this.applyRounding(this.value());
+        // Guarded so a field with no rule, or a value already at the right precision, does not emit a
+        // change and mark the form dirty for nothing.
+        if (rounded !== this.value()) {
+            this.value.set(rounded);
+        }
+    }
+    /** `p-inputnumber` emits `undefined` as well as null for a cleared control, and the wire value
+        for a number is null either way. */
+    onValueChange(next) {
+        this.value.set(next ?? null);
+    }
+    /**
+     * The value rounded the way the config asks, clamped back into the field's own range.
+     *
+     * The clamp is not belt-and-braces: rounding `9.4` up in a field capped at `9.5` would otherwise
+     * produce `10`, a value the same config declares out of bounds — a setting inventing data its
+     * neighbour rejects.
+     */
+    applyRounding(value) {
+        const config = this.config();
+        if (value === null || config.roundingRule === 'none') {
+            return value;
+        }
+        const places = config.maxFractionDigits ?? 0;
+        const scaled = shiftDecimal(value, places);
+        const rounded = config.roundingRule === 'up' ? Math.ceil(scaled) : Math.floor(scaled);
+        let result = shiftDecimal(rounded, -places);
+        if (config.min !== null && result < config.min) {
+            result = config.min;
+        }
+        if (config.max !== null && result > config.max) {
+            result = config.max;
+        }
+        return result;
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: NumberFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: NumberFieldInputComponent, isStandalone: true, selector: "vcr-number-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", blurred: "blurred" }, host: { properties: { "class.number-field-input--negative": "showsNegativeInRed()", "class.number-field-input--parenthesised": "showsParenthesised()" } }, ngImport: i0, template: "<p-inputnumber\n  mode=\"decimal\"\n  [inputId]=\"inputId()\"\n  [ngModel]=\"value()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"setFocused(true)\"\n  (onBlur)=\"onBlur()\"\n  (onKeyDown)=\"onKeyDown($event)\"\n  [min]=\"config().min\"\n  [max]=\"config().max\"\n  [step]=\"config().step\"\n  [showButtons]=\"config().showButtons\"\n  [buttonLayout]=\"config().buttonLayout\"\n  [useGrouping]=\"config().useGrouping\"\n  [minFractionDigits]=\"minFractionDigits()\"\n  [maxFractionDigits]=\"maxFractionDigits()\"\n  [prefix]=\"config().prefix\"\n  [suffix]=\"config().suffix\"\n  [placeholder]=\"config().placeholder\"\n  [showClear]=\"config().showClear\"\n  [allowEmpty]=\"config().allowEmpty\"\n  [locale]=\"locale()\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  [size]=\"primeSize()\"\n/>\n\n@if (showsParenthesised()) {\n  <!-- Drawn over the control rather than instead of it, so focus, tab order and the value the\n       screen reader announces all stay with the real input \u2014 which is hidden underneath by the\n       stylesheet, not unmounted. `aria-hidden` and `pointer-events: none` keep this from being a\n       second thing to read or to click. -->\n  <span class=\"number-field-input__accounting\" aria-hidden=\"true\">{{ parenthesisedValue() }}</span>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;position:relative;min-width:0}:host ::ng-deep .p-inputnumber,:host ::ng-deep input{width:100%}:host(.number-field-input--negative) ::ng-deep input{color:var(--error-color)}:host(.number-field-input--parenthesised) ::ng-deep input{color:transparent}.number-field-input__accounting{position:absolute;inset:0;display:flex;align-items:center;padding-inline:var(--p-inputtext-padding-x, .75rem);color:var(--content-color);font:inherit;pointer-events:none;overflow:hidden;white-space:nowrap}:host(.number-field-input--negative) .number-field-input__accounting{color:var(--error-color)}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: InputNumber, selector: "p-inputNumber, p-inputnumber, p-input-number", inputs: ["showButtons", "format", "buttonLayout", "inputId", "styleClass", "placeholder", "tabindex", "title", "ariaLabelledBy", "ariaDescribedBy", "ariaLabel", "ariaRequired", "autocomplete", "incrementButtonClass", "decrementButtonClass", "incrementButtonIcon", "decrementButtonIcon", "readonly", "allowEmpty", "locale", "localeMatcher", "mode", "currency", "currencyDisplay", "useGrouping", "minFractionDigits", "maxFractionDigits", "prefix", "suffix", "inputStyle", "inputStyleClass", "showClear", "autofocus"], outputs: ["onInput", "onFocus", "onBlur", "onKeyDown", "onClear"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: NumberFieldInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-number-field-input', standalone: true, imports: [FormsModule, InputNumber], changeDetection: ChangeDetectionStrategy.OnPush, host: {
+                        '[class.number-field-input--negative]': 'showsNegativeInRed()',
+                        '[class.number-field-input--parenthesised]': 'showsParenthesised()',
+                    }, template: "<p-inputnumber\n  mode=\"decimal\"\n  [inputId]=\"inputId()\"\n  [ngModel]=\"value()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"setFocused(true)\"\n  (onBlur)=\"onBlur()\"\n  (onKeyDown)=\"onKeyDown($event)\"\n  [min]=\"config().min\"\n  [max]=\"config().max\"\n  [step]=\"config().step\"\n  [showButtons]=\"config().showButtons\"\n  [buttonLayout]=\"config().buttonLayout\"\n  [useGrouping]=\"config().useGrouping\"\n  [minFractionDigits]=\"minFractionDigits()\"\n  [maxFractionDigits]=\"maxFractionDigits()\"\n  [prefix]=\"config().prefix\"\n  [suffix]=\"config().suffix\"\n  [placeholder]=\"config().placeholder\"\n  [showClear]=\"config().showClear\"\n  [allowEmpty]=\"config().allowEmpty\"\n  [locale]=\"locale()\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  [size]=\"primeSize()\"\n/>\n\n@if (showsParenthesised()) {\n  <!-- Drawn over the control rather than instead of it, so focus, tab order and the value the\n       screen reader announces all stay with the real input \u2014 which is hidden underneath by the\n       stylesheet, not unmounted. `aria-hidden` and `pointer-events: none` keep this from being a\n       second thing to read or to click. -->\n  <span class=\"number-field-input__accounting\" aria-hidden=\"true\">{{ parenthesisedValue() }}</span>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;position:relative;min-width:0}:host ::ng-deep .p-inputnumber,:host ::ng-deep input{width:100%}:host(.number-field-input--negative) ::ng-deep input{color:var(--error-color)}:host(.number-field-input--parenthesised) ::ng-deep input{color:transparent}.number-field-input__accounting{position:absolute;inset:0;display:flex;align-items:center;padding-inline:var(--p-inputtext-padding-x, .75rem);color:var(--content-color);font:inherit;pointer-events:none;overflow:hidden;white-space:nowrap}:host(.number-field-input--negative) .number-field-input__accounting{color:var(--error-color)}\n"] }]
+        }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], blurred: [{ type: i0.Output, args: ["blurred"] }] } });
+/**
+ * `value` with its decimal point moved `places` to the right, without the error a multiply brings.
+ *
+ * `0.07 * 100` is `7.000000000000001` in binary floating point, and `Math.ceil` of that is `8` — so
+ * the obvious implementation rounds an already-exact `0.07` up to `0.08`, and every "why did it
+ * add a cent" bug follows from there. It is not a rare corner either: sweeping `0.001` to `200`
+ * at nought to three decimal places, the multiply disagrees with this on 2611 values.
+ *
+ * Moving the exponent in the decimal-string form leaves the digits alone, so only the rounding
+ * step can change the value.
+ */
+function shiftDecimal(value, places) {
+    if (places === 0 || !Number.isFinite(value)) {
+        return value;
+    }
+    const [mantissa, exponent] = value.toExponential().split('e');
+    return Number(`${mantissa}e${Number(exponent) + places}`);
+}
+
+/**
+ * Draws a checkbox field — one box, or a group of them.
+ *
+ * Which it draws comes from `CheckboxFieldConfig.checkboxType`, since `Checkbox` is a single field
+ * type an author flips between modes rather than two types to choose between. The two markups
+ * share nothing but the element, so the template branches once at the top rather than trying to
+ * parameterise one into the other.
+ *
+ * ## The tri-state cycle (`'single'`)
+ *
+ * PrimeNG 21 has no `TriStateCheckbox`, so the third state is built here. The box is bound as an
+ * ordinary binary one and its emitted boolean is **ignored**: {@link onSingleChange} advances this
+ * renderer's own `null -> true -> false -> null` cycle instead, and `indeterminate` is bound back
+ * from the value. That works because the bound value genuinely changes at each step — `Checkbox`
+ * clears its internal indeterminate flag on the first click and re-reads the input only when it
+ * changes, which every step of the cycle does.
+ *
+ * ## The array model (`'group'`)
+ *
+ * Each box is a `p-checkbox` in its **non-binary** mode, where PrimeNG treats the bound model as
+ * the list of ticked values and adds to or filters it on each click. That is why
+ * {@link groupValue} never yields null: the filter runs against the current model before anything
+ * else, so a null would throw rather than begin a fresh selection.
+ */
+class CheckboxFieldInputComponent {
+    config = input.required(...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    value = model(null, ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    isGroup = computed(() => this.config().checkboxType === 'group', ...(ngDevMode ? [{ debugName: "isGroup" }] : /* istanbul ignore next */ []));
+    /** The control's `id` in single mode, and the stem of each box's id in group mode. */
+    inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** The boxes in the order `sortChoices` asks for, in group mode. Only the drawing order changes:
+        a stored selection is a set of values and does not depend on it. */
+    options = computed(() => sortChoiceOptions(this.config().options, this.config().sortChoices), ...(ngDevMode ? [{ debugName: "options" }] : /* istanbul ignore next */ []));
+    /**
+     * The value read as this mode expects it.
+     *
+     * Both narrow defensively rather than casting. The facade always decodes through the codec, so
+     * the shape should match the mode — but an author flipping `checkboxType` changes what the
+     * config means without changing what is stored, and a renderer that threw on that would take the
+     * config form down with it.
+     */
+    singleValue = computed(() => {
+        const current = this.value();
+        return typeof current === 'boolean' ? current : null;
+    }, ...(ngDevMode ? [{ debugName: "singleValue" }] : /* istanbul ignore next */ []));
+    groupValue = computed(() => {
+        const current = this.value();
+        return Array.isArray(current) ? current : [];
+    }, ...(ngDevMode ? [{ debugName: "groupValue" }] : /* istanbul ignore next */ []));
+    isChecked = computed(() => this.singleValue() === true, ...(ngDevMode ? [{ debugName: "isChecked" }] : /* istanbul ignore next */ []));
+    /** Only ever true on a tri-state single box: a group has no third state to show. */
+    isIndeterminate = computed(() => !this.isGroup() && this.config().triState && this.singleValue() === null, ...(ngDevMode ? [{ debugName: "isIndeterminate" }] : /* istanbul ignore next */ []));
+    checkboxIcon = computed(() => this.config().checkboxIcon || undefined, ...(ngDevMode ? [{ debugName: "checkboxIcon" }] : /* istanbul ignore next */ []));
+    /**
+     * Whether the selection breaks the configured bounds, in group mode.
+     *
+     * Shown rather than enforced — the bounds are advisory (see `CheckboxFieldConfig`), and a control
+     * that silently refused a click would be a worse way to say so than a message.
+     */
+    boundsError = computed(() => {
+        if (!this.isGroup()) {
+            return '';
+        }
+        const { minSelected, maxSelected } = this.config();
+        const count = this.groupValue().length;
+        if (minSelected > 0 && count < minSelected) {
+            return `Choose at least ${minSelected}.`;
+        }
+        if (maxSelected > 0 && count > maxSelected) {
+            return `Choose no more than ${maxSelected}.`;
+        }
+        return '';
+    }, ...(ngDevMode ? [{ debugName: "boundsError" }] : /* istanbul ignore next */ []));
+    optionId(value) {
+        return `${this.inputId()}-${value}`;
+    }
+    /**
+     * Advances the single box's value.
+     *
+     * The event is deliberately unused. For a tri-state field the checkbox can only report two
+     * states, so its boolean would collapse the cycle; for a binary one the cycle below reduces to
+     * the same two values anyway, so one path serves both and there is no branch to get wrong.
+     */
+    onSingleChange() {
+        const current = this.singleValue();
+        if (this.config().triState) {
+            this.value.set(current === null ? true : current ? false : null);
+            return;
+        }
+        this.value.set(current !== true);
+    }
+    /** PrimeNG hands back the new array; the empty list is what "nothing ticked" means. */
+    onGroupChange(next) {
+        this.value.set(next ?? []);
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: CheckboxFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: CheckboxFieldInputComponent, isStandalone: true, selector: "vcr-checkbox-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange" }, ngImport: i0, template: "@if (isGroup()) {\n  @if (options().length === 0) {\n    <!-- Only reachable through a hand-edited config: the editor requires at least one option in\n         this mode, and the host's submit guard blocks a save without one. -->\n    <p class=\"checkbox-field__empty\">This field has no options to choose from yet.</p>\n  } @else {\n    <div\n      class=\"checkbox-field__options\"\n      [class.checkbox-field__options--horizontal]=\"config().orientation === 'horizontal'\"\n      role=\"group\"\n      [attr.aria-label]=\"inputId()\"\n    >\n      @for (option of options(); track option.value) {\n        <div class=\"checkbox-field__option\">\n          <p-checkbox\n            [inputId]=\"optionId(option.value)\"\n            [name]=\"inputId()\"\n            [value]=\"option.value\"\n            [ngModel]=\"groupValue()\"\n            [ngModelOptions]=\"{ standalone: true }\"\n            (ngModelChange)=\"onGroupChange($event)\"\n            [required]=\"required()\"\n            [disabled]=\"disabled()\"\n            [invalid]=\"invalid() || boundsError() !== ''\"\n            [size]=\"primeSize()\"\n          />\n          <label class=\"checkbox-field__label\" [attr.for]=\"optionId(option.value)\">\n            {{ option.label }}\n          </label>\n        </div>\n      }\n    </div>\n\n    @if (boundsError() !== '') {\n      <small class=\"checkbox-field__hint\">{{ boundsError() }}</small>\n    }\n  }\n} @else {\n  <div\n    class=\"checkbox-field__row\"\n    [class.checkbox-field__row--label-left]=\"config().labelPosition === 'left'\"\n  >\n    <p-checkbox\n      [inputId]=\"inputId()\"\n      [binary]=\"true\"\n      [ngModel]=\"isChecked()\"\n      [ngModelOptions]=\"{ standalone: true }\"\n      (ngModelChange)=\"onSingleChange()\"\n      [indeterminate]=\"isIndeterminate()\"\n      [checkboxIcon]=\"checkboxIcon()\"\n      [readonly]=\"config().readonly\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [invalid]=\"invalid()\"\n      [size]=\"primeSize()\"\n    />\n\n    @if (config().label !== '') {\n      <label class=\"checkbox-field__label\" [attr.for]=\"inputId()\">{{ config().label }}</label>\n    }\n  </div>\n\n  @if (config().triState && singleValue() === null) {\n    <small class=\"checkbox-field__note\">\n      Not set \u2014 click to cycle through yes, no and not set.\n    </small>\n  }\n}\n", styles: ["@charset \"UTF-8\";:host{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}.checkbox-field__row{display:flex;flex-direction:row;align-items:center;gap:8px}.checkbox-field__row--label-left{flex-direction:row-reverse;justify-content:flex-end}.checkbox-field__options{display:flex;flex-direction:column;gap:8px}.checkbox-field__options--horizontal{flex-direction:row;flex-wrap:wrap;gap:16px}.checkbox-field__option{display:flex;flex-direction:row;align-items:center;gap:8px}.checkbox-field__label{color:var(--content-color);font-size:13px;cursor:pointer}.checkbox-field__note{color:var(--surface-500);font-size:12px}.checkbox-field__hint{color:var(--error-color);font-size:12px}.checkbox-field__empty{margin:0;padding:16px;border:1px dashed var(--content-border-color);border-radius:var(--border-radius-sm);color:var(--surface-500);font-size:13px}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: Checkbox, selector: "p-checkbox, p-checkBox, p-check-box", inputs: ["hostName", "value", "binary", "ariaLabelledBy", "ariaLabel", "tabindex", "inputId", "inputStyle", "styleClass", "inputClass", "indeterminate", "formControl", "checkboxIcon", "readonly", "autofocus", "trueValue", "falseValue", "variant", "size"], outputs: ["onChange", "onFocus", "onBlur"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: CheckboxFieldInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-checkbox-field-input', standalone: true, imports: [FormsModule, Checkbox], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (isGroup()) {\n  @if (options().length === 0) {\n    <!-- Only reachable through a hand-edited config: the editor requires at least one option in\n         this mode, and the host's submit guard blocks a save without one. -->\n    <p class=\"checkbox-field__empty\">This field has no options to choose from yet.</p>\n  } @else {\n    <div\n      class=\"checkbox-field__options\"\n      [class.checkbox-field__options--horizontal]=\"config().orientation === 'horizontal'\"\n      role=\"group\"\n      [attr.aria-label]=\"inputId()\"\n    >\n      @for (option of options(); track option.value) {\n        <div class=\"checkbox-field__option\">\n          <p-checkbox\n            [inputId]=\"optionId(option.value)\"\n            [name]=\"inputId()\"\n            [value]=\"option.value\"\n            [ngModel]=\"groupValue()\"\n            [ngModelOptions]=\"{ standalone: true }\"\n            (ngModelChange)=\"onGroupChange($event)\"\n            [required]=\"required()\"\n            [disabled]=\"disabled()\"\n            [invalid]=\"invalid() || boundsError() !== ''\"\n            [size]=\"primeSize()\"\n          />\n          <label class=\"checkbox-field__label\" [attr.for]=\"optionId(option.value)\">\n            {{ option.label }}\n          </label>\n        </div>\n      }\n    </div>\n\n    @if (boundsError() !== '') {\n      <small class=\"checkbox-field__hint\">{{ boundsError() }}</small>\n    }\n  }\n} @else {\n  <div\n    class=\"checkbox-field__row\"\n    [class.checkbox-field__row--label-left]=\"config().labelPosition === 'left'\"\n  >\n    <p-checkbox\n      [inputId]=\"inputId()\"\n      [binary]=\"true\"\n      [ngModel]=\"isChecked()\"\n      [ngModelOptions]=\"{ standalone: true }\"\n      (ngModelChange)=\"onSingleChange()\"\n      [indeterminate]=\"isIndeterminate()\"\n      [checkboxIcon]=\"checkboxIcon()\"\n      [readonly]=\"config().readonly\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [invalid]=\"invalid()\"\n      [size]=\"primeSize()\"\n    />\n\n    @if (config().label !== '') {\n      <label class=\"checkbox-field__label\" [attr.for]=\"inputId()\">{{ config().label }}</label>\n    }\n  </div>\n\n  @if (config().triState && singleValue() === null) {\n    <small class=\"checkbox-field__note\">\n      Not set \u2014 click to cycle through yes, no and not set.\n    </small>\n  }\n}\n", styles: ["@charset \"UTF-8\";:host{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}.checkbox-field__row{display:flex;flex-direction:row;align-items:center;gap:8px}.checkbox-field__row--label-left{flex-direction:row-reverse;justify-content:flex-end}.checkbox-field__options{display:flex;flex-direction:column;gap:8px}.checkbox-field__options--horizontal{flex-direction:row;flex-wrap:wrap;gap:16px}.checkbox-field__option{display:flex;flex-direction:row;align-items:center;gap:8px}.checkbox-field__label{color:var(--content-color);font-size:13px;cursor:pointer}.checkbox-field__note{color:var(--surface-500);font-size:12px}.checkbox-field__hint{color:var(--error-color);font-size:12px}.checkbox-field__empty{margin:0;padding:16px;border:1px dashed var(--content-border-color);border-radius:var(--border-radius-sm);color:var(--surface-500);font-size:13px}\n"] }]
+        }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }] } });
+
+/**
+ * Draws a group of radio buttons, for the `RadioButton` type.
+ *
+ * `[name]` is bound to the field key on every button so two radio groups on one page — a
+ * realistic arrangement on the page-content screen — do not share browser-level exclusivity and
+ * silently deselect each other.
+ *
+ * The Clear button exists because radio buttons have no native way to deselect: without it a user
+ * who picks a value by mistake cannot undo it, and the field goes from empty to permanently
+ * answered on the first click. Offered only when `allowClear` is set — see `RadioFieldConfig`.
+ */
+class RadioFieldInputComponent {
+    config = input.required(...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    value = model(null, ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    /** The group's shared `name`, and the stem of each button's own id. */
+    groupName = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "groupName" }] : /* istanbul ignore next */ []));
+    /** The choices in the order `sortChoices` asks for. Computed rather than sorted in the template,
+        so the array identity only changes when the config does. */
+    options = computed(() => sortChoiceOptions(this.config().options, this.config().sortChoices), ...(ngDevMode ? [{ debugName: "options" }] : /* istanbul ignore next */ []));
+    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    canClear = computed(() => this.config().allowClear && this.value() !== null, ...(ngDevMode ? [{ debugName: "canClear" }] : /* istanbul ignore next */ []));
+    optionId(value) {
+        return `${this.groupName()}-${value}`;
+    }
+    onValueChange(next) {
+        this.value.set(next ?? null);
+    }
+    clear() {
+        this.value.set(null);
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: RadioFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: RadioFieldInputComponent, isStandalone: true, selector: "vcr-radio-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange" }, ngImport: i0, template: "@if (options().length === 0) {\n  <!-- Only reachable through a hand-edited config: the config editor requires at least one\n       option, and the host's submit guard blocks a save without one. -->\n  <p class=\"radio-field__empty\">This field has no options to choose from yet.</p>\n} @else {\n  <div\n    class=\"radio-field__options\"\n    [class.radio-field__options--horizontal]=\"config().orientation === 'horizontal'\"\n    role=\"radiogroup\"\n    [attr.aria-label]=\"groupName()\"\n  >\n    @for (option of options(); track option.value) {\n      <div class=\"radio-field__option\">\n        <p-radiobutton\n          [inputId]=\"optionId(option.value)\"\n          [name]=\"groupName()\"\n          [value]=\"option.value\"\n          [ngModel]=\"value()\"\n          [ngModelOptions]=\"{ standalone: true }\"\n          (ngModelChange)=\"onValueChange($event)\"\n          [required]=\"required()\"\n          [disabled]=\"disabled()\"\n          [invalid]=\"invalid()\"\n          [size]=\"primeSize()\"\n        />\n        <label class=\"radio-field__label\" [attr.for]=\"optionId(option.value)\">\n          {{ option.label }}\n        </label>\n      </div>\n    }\n  </div>\n\n  @if (canClear()) {\n    <p-button\n      label=\"Clear\"\n      icon=\"pi pi-times\"\n      severity=\"secondary\"\n      [text]=\"true\"\n      type=\"button\"\n      [disabled]=\"disabled()\"\n      (onClick)=\"clear()\"\n    />\n  }\n}\n", styles: [":host{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0}.radio-field__options{display:flex;flex-direction:column;gap:8px}.radio-field__options--horizontal{flex-direction:row;flex-wrap:wrap;gap:16px}.radio-field__option{display:flex;flex-direction:row;align-items:center;gap:8px}.radio-field__label{color:var(--content-color);font-size:13px;cursor:pointer}.radio-field__empty{margin:0;padding:16px;border:1px dashed var(--content-border-color);border-radius:var(--border-radius-sm);color:var(--surface-500);font-size:13px}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "ngmodule", type: ButtonModule }, { kind: "component", type: i2.Button, selector: "p-button", inputs: ["hostName", "type", "badge", "disabled", "raised", "rounded", "text", "plain", "outlined", "link", "tabindex", "size", "variant", "style", "styleClass", "badgeClass", "badgeSeverity", "ariaLabel", "autofocus", "iconPos", "icon", "label", "loading", "loadingIcon", "severity", "buttonProps", "fluid"], outputs: ["onClick", "onFocus", "onBlur"] }, { kind: "component", type: RadioButton, selector: "p-radioButton, p-radiobutton, p-radio-button", inputs: ["value", "tabindex", "inputId", "ariaLabelledBy", "ariaLabel", "styleClass", "autofocus", "binary", "variant", "size"], outputs: ["onClick", "onFocus", "onBlur"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: RadioFieldInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-radio-field-input', standalone: true, imports: [FormsModule, ButtonModule, RadioButton], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (options().length === 0) {\n  <!-- Only reachable through a hand-edited config: the config editor requires at least one\n       option, and the host's submit guard blocks a save without one. -->\n  <p class=\"radio-field__empty\">This field has no options to choose from yet.</p>\n} @else {\n  <div\n    class=\"radio-field__options\"\n    [class.radio-field__options--horizontal]=\"config().orientation === 'horizontal'\"\n    role=\"radiogroup\"\n    [attr.aria-label]=\"groupName()\"\n  >\n    @for (option of options(); track option.value) {\n      <div class=\"radio-field__option\">\n        <p-radiobutton\n          [inputId]=\"optionId(option.value)\"\n          [name]=\"groupName()\"\n          [value]=\"option.value\"\n          [ngModel]=\"value()\"\n          [ngModelOptions]=\"{ standalone: true }\"\n          (ngModelChange)=\"onValueChange($event)\"\n          [required]=\"required()\"\n          [disabled]=\"disabled()\"\n          [invalid]=\"invalid()\"\n          [size]=\"primeSize()\"\n        />\n        <label class=\"radio-field__label\" [attr.for]=\"optionId(option.value)\">\n          {{ option.label }}\n        </label>\n      </div>\n    }\n  </div>\n\n  @if (canClear()) {\n    <p-button\n      label=\"Clear\"\n      icon=\"pi pi-times\"\n      severity=\"secondary\"\n      [text]=\"true\"\n      type=\"button\"\n      [disabled]=\"disabled()\"\n      (onClick)=\"clear()\"\n    />\n  }\n}\n", styles: [":host{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0}.radio-field__options{display:flex;flex-direction:column;gap:8px}.radio-field__options--horizontal{flex-direction:row;flex-wrap:wrap;gap:16px}.radio-field__option{display:flex;flex-direction:row;align-items:center;gap:8px}.radio-field__label{color:var(--content-color);font-size:13px;cursor:pointer}.radio-field__empty{margin:0;padding:16px;border:1px dashed var(--content-border-color);border-radius:var(--border-radius-sm);color:var(--surface-500);font-size:13px}\n"] }]
+        }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }] } });
+
+/**
+ * Draws a dropdown, for the `Dropdown` type — `p-select` for one pick, `p-multiselect` for many.
+ *
+ * The options-based counterpart to `RadioFieldInputComponent`, for the lists radio buttons cannot
+ * carry: fifty countries drawn as fifty radio buttons is the case this exists for. Which of the
+ * two controls is drawn is `SelectFieldConfig.selectionMode`, and because the two hold different
+ * *shapes* of value the codec in `selectFieldRenderer` reads that member too.
+ *
+ * No Clear button of its own, unlike the radio renderer: both controls have a native clear icon,
+ * offered by `SelectFieldConfig.showClear`.
+ */
+class SelectFieldInputComponent {
+    config = input.required(...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    value = model(null, ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    /** The control's own id, so the facade's `<label for>` points at it. Same derivation as every
+        other renderer of a single control. */
+    inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    /**
+     * The choices in the order `sortChoices` asks for.
+     *
+     * Computed rather than sorted in the template, so the array identity only changes when the
+     * config does — a fresh array per read would be a new input value on every change-detection
+     * pass, which for an `OnPush` child is an endless re-render.
+     *
+     * Copied because `sortChoiceOptions` answers `readonly`, which both PrimeNG controls reject:
+     * their `options` input is a mutable `any[]`. The copy costs nothing here since the `computed`
+     * memoises it, and it is the honest place to drop the guarantee — `RadioFieldInputComponent`
+     * never needs to, because it iterates the array itself rather than handing it to a control.
+     */
+    options = computed(() => [
+        ...sortChoiceOptions(this.config().options, this.config().sortChoices),
+    ], ...(ngDevMode ? [{ debugName: "options" }] : /* istanbul ignore next */ []));
+    isMultiple = computed(() => this.config().selectionMode === 'multiple', ...(ngDevMode ? [{ debugName: "isMultiple" }] : /* istanbul ignore next */ []));
+    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** `''` means "leave PrimeNG's own default", which an empty string would instead overwrite with
+        a blank. Same translation `primeSize` makes. */
+    placeholder = computed(() => this.config().placeholder || undefined, ...(ngDevMode ? [{ debugName: "placeholder" }] : /* istanbul ignore next */ []));
+    filterPlaceholder = computed(() => this.config().filterPlaceholder || undefined, ...(ngDevMode ? [{ debugName: "filterPlaceholder" }] : /* istanbul ignore next */ []));
+    /** The `'single'` value, ignoring an array left by a mode switch under stored data. */
+    singleValue = computed(() => {
+        const value = this.value();
+        return typeof value === 'string' ? value : null;
+    }, ...(ngDevMode ? [{ debugName: "singleValue" }] : /* istanbul ignore next */ []));
+    /**
+     * The `'multiple'` value — **never null**.
+     *
+     * `p-multiselect` derives its next value as `modelValue().filter(...)`, so deselecting an option
+     * against a null model throws. The empty array is the honest reading of "nothing picked" here
+     * anyway, exactly as it is for the checkbox group.
+     *
+     * The array is passed through rather than copied: the control builds a fresh array on every
+     * change (`filter`, or a spread) and never writes into the one it was given, so sharing the
+     * reference with `FieldInputComponent.decoded` cannot corrupt that computed's cached value.
+     */
+    multipleValue = computed(() => {
+        const value = this.value();
+        return Array.isArray(value) ? value : [];
+    }, ...(ngDevMode ? [{ debugName: "multipleValue" }] : /* istanbul ignore next */ []));
+    onSingleChange(next) {
+        this.value.set(next ?? null);
+    }
+    onMultipleChange(next) {
+        this.value.set(next ?? []);
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: SelectFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: SelectFieldInputComponent, isStandalone: true, selector: "vcr-select-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange" }, ngImport: i0, template: "@if (options().length === 0) {\n  <!-- Only reachable through a hand-edited config: the config editor requires at least one\n       option, and the host's submit guard blocks a save without one. -->\n  <p class=\"select-field__empty\">This field has no options to choose from yet.</p>\n} @else if (isMultiple()) {\n  <!-- `filterPlaceHolder` is PrimeNG's own spelling on this component \u2014 `p-select` below takes\n       the same setting as `filterPlaceholder`. -->\n  <p-multiselect\n    [inputId]=\"inputId()\"\n    [options]=\"options()\"\n    optionLabel=\"label\"\n    optionValue=\"value\"\n    [ngModel]=\"multipleValue()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onMultipleChange($event)\"\n    [placeholder]=\"placeholder()\"\n    [showClear]=\"config().showClear\"\n    [filter]=\"config().filter\"\n    [filterPlaceHolder]=\"filterPlaceholder()\"\n    [highlightOnSelect]=\"config().highlightOnSelect\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n    appendTo=\"body\"\n  />\n} @else {\n  <p-select\n    [inputId]=\"inputId()\"\n    [options]=\"options()\"\n    optionLabel=\"label\"\n    optionValue=\"value\"\n    [ngModel]=\"singleValue()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onSingleChange($event)\"\n    [placeholder]=\"placeholder()\"\n    [showClear]=\"config().showClear\"\n    [filter]=\"config().filter\"\n    [filterPlaceholder]=\"filterPlaceholder()\"\n    [checkmark]=\"config().checkmark\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n    appendTo=\"body\"\n  />\n}\n", styles: [":host{display:flex;flex-direction:column;align-items:stretch;gap:8px;min-width:0}p-select,p-multiselect{width:100%;min-width:0}.select-field__empty{margin:0;padding:16px;border:1px dashed var(--content-border-color);border-radius:var(--border-radius-sm);color:var(--surface-500);font-size:13px}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: MultiSelect, selector: "p-multiSelect, p-multiselect, p-multi-select", inputs: ["id", "ariaLabel", "styleClass", "panelStyle", "panelStyleClass", "inputId", "readonly", "group", "filter", "filterPlaceHolder", "filterLocale", "overlayVisible", "tabindex", "dataKey", "ariaLabelledBy", "displaySelectedLabel", "maxSelectedLabels", "selectionLimit", "selectedItemsLabel", "showToggleAll", "emptyFilterMessage", "emptyMessage", "resetFilterOnHide", "dropdownIcon", "chipIcon", "optionLabel", "optionValue", "optionDisabled", "optionGroupLabel", "optionGroupChildren", "showHeader", "filterBy", "scrollHeight", "lazy", "virtualScroll", "loading", "virtualScrollItemSize", "loadingIcon", "virtualScrollOptions", "overlayOptions", "ariaFilterLabel", "filterMatchMode", "tooltip", "tooltipPosition", "tooltipPositionStyle", "tooltipStyleClass", "autofocusFilter", "display", "autocomplete", "showClear", "autofocus", "placeholder", "options", "filterValue", "selectAll", "focusOnHover", "filterFields", "selectOnFocus", "autoOptionFocus", "highlightOnSelect", "size", "variant", "fluid", "appendTo", "motionOptions"], outputs: ["onChange", "onFilter", "onFocus", "onBlur", "onClick", "onClear", "onPanelShow", "onPanelHide", "onLazyLoad", "onRemove", "onSelectAllChange"] }, { kind: "component", type: Select, selector: "p-select", inputs: ["id", "scrollHeight", "filter", "panelStyle", "styleClass", "panelStyleClass", "readonly", "editable", "tabindex", "placeholder", "loadingIcon", "filterPlaceholder", "filterLocale", "inputId", "dataKey", "filterBy", "filterFields", "autofocus", "resetFilterOnHide", "checkmark", "dropdownIcon", "loading", "optionLabel", "optionValue", "optionDisabled", "optionGroupLabel", "optionGroupChildren", "group", "showClear", "emptyFilterMessage", "emptyMessage", "lazy", "virtualScroll", "virtualScrollItemSize", "virtualScrollOptions", "overlayOptions", "ariaFilterLabel", "ariaLabel", "ariaLabelledBy", "filterMatchMode", "tooltip", "tooltipPosition", "tooltipPositionStyle", "tooltipStyleClass", "focusOnHover", "selectOnFocus", "autoOptionFocus", "autofocusFilter", "filterValue", "options", "appendTo", "motionOptions"], outputs: ["onChange", "onFilter", "onFocus", "onBlur", "onClick", "onShow", "onHide", "onClear", "onLazyLoad"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: SelectFieldInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-select-field-input', standalone: true, imports: [FormsModule, MultiSelect, Select], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (options().length === 0) {\n  <!-- Only reachable through a hand-edited config: the config editor requires at least one\n       option, and the host's submit guard blocks a save without one. -->\n  <p class=\"select-field__empty\">This field has no options to choose from yet.</p>\n} @else if (isMultiple()) {\n  <!-- `filterPlaceHolder` is PrimeNG's own spelling on this component \u2014 `p-select` below takes\n       the same setting as `filterPlaceholder`. -->\n  <p-multiselect\n    [inputId]=\"inputId()\"\n    [options]=\"options()\"\n    optionLabel=\"label\"\n    optionValue=\"value\"\n    [ngModel]=\"multipleValue()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onMultipleChange($event)\"\n    [placeholder]=\"placeholder()\"\n    [showClear]=\"config().showClear\"\n    [filter]=\"config().filter\"\n    [filterPlaceHolder]=\"filterPlaceholder()\"\n    [highlightOnSelect]=\"config().highlightOnSelect\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n    appendTo=\"body\"\n  />\n} @else {\n  <p-select\n    [inputId]=\"inputId()\"\n    [options]=\"options()\"\n    optionLabel=\"label\"\n    optionValue=\"value\"\n    [ngModel]=\"singleValue()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onSingleChange($event)\"\n    [placeholder]=\"placeholder()\"\n    [showClear]=\"config().showClear\"\n    [filter]=\"config().filter\"\n    [filterPlaceholder]=\"filterPlaceholder()\"\n    [checkmark]=\"config().checkmark\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n    appendTo=\"body\"\n  />\n}\n", styles: [":host{display:flex;flex-direction:column;align-items:stretch;gap:8px;min-width:0}p-select,p-multiselect{width:100%;min-width:0}.select-field__empty{margin:0;padding:16px;border:1px dashed var(--content-border-color);border-radius:var(--border-radius-sm);color:var(--surface-500);font-size:13px}\n"] }]
+        }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }] } });
+
+/**
+ * Draws a date, or a date and time, for the `DatePicker` type — `showTime` decides which.
+ *
+ * `appendTo="body"` because this renderer is used inside `p-dialog` on the page-content screen,
+ * where an in-flow overlay would be clipped by the dialog — the same binding every `p-select` in
+ * this app uses.
+ *
+ * Note there is no locale setting: `p-datepicker` has no `locale` input, and month and day names
+ * come from PrimeNG's global translation, which `app.config.ts` does not configure. The config
+ * editor deliberately does not offer one.
+ */
+class DateFieldInputComponent {
+    config = input.required(...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    value = model(null, ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    /** Whether the caret is in the picker's own text input. See {@link displayValue}. */
+    editing = signal(false, ...(ngDevMode ? [{ debugName: "editing" }] : /* istanbul ignore next */ []));
+    /** The picker itself, so {@link onTextInput} can correct the value it parsed. */
+    picker = viewChild(DatePicker, ...(ngDevMode ? [{ debugName: "picker" }] : /* istanbul ignore next */ []));
+    /** Whether the configured format names a day, and so is one `p-datepicker` can parse back from
+        typed text on its own. See {@link onTextInput}. */
+    namesDay = computed(() => dateFormatNamesDay(this.config().dateFormat), ...(ngDevMode ? [{ debugName: "namesDay" }] : /* istanbul ignore next */ []));
+    /**
+     * What `p-datepicker` is actually bound to: {@link value}, except while the user is typing.
+     *
+     * ## The problem this solves
+     *
+     * `p-datepicker` re-renders its input from the model on *every* write it receives —
+     * `writeControlValue` calls `updateInputfield()` unconditionally — and it parses what has been
+     * typed on every keystroke, pushing the result out through `ngModelChange`. Binding `value()`
+     * straight back in therefore feeds the user's own half-typed date back at them, reformatted.
+     *
+     * Typing a four-digit year is where that bites. At `12/25/20` the picker parses a real date in
+     * the year 20, emits it, and the echo repaints the input as `12/25/0020` — moving the caret and
+     * leaving the remaining `26` to land in the middle of a year the user never typed. Whatever that
+     * produces is then parsed on blur, where `onInputBlur` repaints the input from the model one last
+     * time and the value appears to have been erased.
+     *
+     * ## Why holding the value back is the fix
+     *
+     * The picker keeps its own parse of the text while it is focused, so suppressing the echo costs
+     * nothing: `ngModelChange` still fires on every keystroke and {@link value} still tracks it, so
+     * the wire value is never stale. Only the *input's text* is left alone, which is the one thing
+     * the user is editing.
+     *
+     * Re-synced on blur so a value the field itself normalises — or one changed from elsewhere while
+     * the input happened to be focused — still reaches the control.
+     */
+    displayValue = signal(null, ...(ngDevMode ? [{ debugName: "displayValue" }] : /* istanbul ignore next */ []));
+    constructor() {
+        // `untracked` on the flag, so this runs for a change to `value` and never merely because focus
+        // moved: the blur handler is what re-syncs, and re-running here on focus *change* would repaint
+        // the input at the moment the caret arrives in it.
+        effect(() => {
+            const next = this.value();
+            if (untracked(this.editing)) {
+                return;
+            }
+            this.displayValue.set(next);
+        });
+    }
+    onFocus() {
+        this.editing.set(true);
+    }
+    onBlur() {
+        this.editing.set(false);
+        this.displayValue.set(this.value());
+    }
+    /**
+     * Reads a date the picker's own parser cannot, for the formats that name no day.
+     *
+     * `p-datepicker` throws on its own `yy` and `MM yy` formats unless `view` is `'year'` — see
+     * {@link parseDaylessDate} — and answers a throw by setting its model to null, which is what
+     * emptied the field on blur. This runs after that: `onUserInput` emits `onInput` as its last
+     * step, so whatever it decided has already happened and can be corrected here.
+     *
+     * Corrected through the picker's own {@link DatePicker.updateModel} rather than by setting
+     * {@link value} directly, because both halves have to agree. `updateModel` sets the control's
+     * internal value *and* emits through `ngModelChange`, so the value this renderer publishes and
+     * the value the control repaints its input from on blur end up the same date. Writing only ours
+     * would leave the control still holding null, and blur would blank the text all over again.
+     *
+     * It deliberately does not touch the input's text, so the caret stays where the user put it.
+     */
+    onTextInput(event) {
+        if (this.namesDay()) {
+            return;
+        }
+        const picker = this.picker();
+        const text = event.target.value;
+        const parsed = parseDaylessDate(text, this.config().dateFormat);
+        // Null means "not a complete answer yet" — a year still being typed — so the value is left
+        // alone rather than cleared. An emptied input is the exception: that is the user removing the
+        // value, and the picker has already set it to null itself.
+        if (picker === undefined || parsed === null) {
+            return;
+        }
+        picker.updateModel(parsed);
+    }
+    /**
+     * The bounds as `Date`s, or undefined for "no bound".
+     *
+     * Each edge is the tighter of the two settings that can bound it: the fixed date from
+     * `minDate`/`maxDate`, and today from `dateLimit`. They narrow rather than override — a field
+     * limited to future dates and also bounded at `2027-01-01` means both, and taking whichever was
+     * set last would silently let one of the two through.
+     *
+     * Computed rather than built inline so the identity is stable across change-detection passes —
+     * a fresh `Date` per read would be a new input value every pass, and `p-datepicker` re-renders
+     * its whole panel when `minDate` changes. That also fixes "today" for as long as the config is
+     * unchanged, which is what a calendar left open across midnight should do.
+     */
+    minDate = computed(() => {
+        const fixed = this.fixedBound('minDate');
+        const limit = this.config().dateLimit === 'future' ? startOfToday() : null;
+        return laterOf(fixed, limit) ?? undefined;
+    }, ...(ngDevMode ? [{ debugName: "minDate" }] : /* istanbul ignore next */ []));
+    maxDate = computed(() => {
+        const fixed = this.fixedBound('maxDate');
+        // The end of today rather than its start: a past-only field with a time on it should still
+        // accept this afternoon, which a bound at midnight would refuse.
+        const limit = this.config().dateLimit === 'past' ? endOfToday() : null;
+        return earlierOf(fixed, limit) ?? undefined;
+    }, ...(ngDevMode ? [{ debugName: "maxDate" }] : /* istanbul ignore next */ []));
+    /** A fixed bound, or null when the config has none — or when the Date Range switch is off, which
+        is what makes that switch a setting rather than a way of hiding two inputs. */
+    fixedBound(member) {
+        const config = this.config();
+        return config.restrictDateRange ? parseLocalDateish(config[member]) : null;
+    }
+    /** `p-datepicker` emits undefined when cleared; null is this field's "no value". */
+    onValueChange(next) {
+        this.value.set(next ?? null);
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: DateFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.2.0", version: "21.2.23", type: DateFieldInputComponent, isStandalone: true, selector: "vcr-date-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange" }, viewQueries: [{ propertyName: "picker", first: true, predicate: DatePicker, descendants: true, isSignal: true }], ngImport: i0, template: "<!-- Bound to `displayValue` rather than to `value` so the control's own text is not repainted\n     under the user while they are typing a date \u2014 see its doc. `ngModelChange` still reports\n     every keystroke, so the value this renderer publishes is unaffected. -->\n<p-datepicker\n  [inputId]=\"inputId()\"\n  [ngModel]=\"displayValue()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"onFocus()\"\n  (onBlur)=\"onBlur()\"\n  (onInput)=\"onTextInput($event)\"\n  [dateFormat]=\"config().dateFormat\"\n  [selectionMode]=\"config().selectionMode\"\n  [showTime]=\"config().showTime\"\n  [hourFormat]=\"config().hourFormat\"\n  [showSeconds]=\"config().showSeconds\"\n  [stepMinute]=\"config().stepMinute\"\n  [showIcon]=\"config().showIcon\"\n  [iconDisplay]=\"config().iconDisplay\"\n  [minDate]=\"minDate()\"\n  [maxDate]=\"maxDate()\"\n  [numberOfMonths]=\"config().numberOfMonths\"\n  [showButtonBar]=\"config().showButtonBar\"\n  [showClear]=\"config().showClear\"\n  [readonlyInput]=\"config().readonlyInput\"\n  [inline]=\"config().inline\"\n  [view]=\"config().view\"\n  [placeholder]=\"config().placeholder\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  appendTo=\"body\"\n/>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep .p-datepicker,:host ::ng-deep input{width:100%}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: DatePicker, selector: "p-datePicker, p-datepicker, p-date-picker", inputs: ["iconDisplay", "styleClass", "inputStyle", "inputId", "inputStyleClass", "placeholder", "ariaLabelledBy", "ariaLabel", "iconAriaLabel", "dateFormat", "multipleSeparator", "rangeSeparator", "inline", "showOtherMonths", "selectOtherMonths", "showIcon", "icon", "readonlyInput", "shortYearCutoff", "hourFormat", "timeOnly", "stepHour", "stepMinute", "stepSecond", "showSeconds", "showOnFocus", "showWeek", "startWeekFromFirstDayOfYear", "showClear", "dataType", "selectionMode", "maxDateCount", "showButtonBar", "todayButtonStyleClass", "clearButtonStyleClass", "autofocus", "autoZIndex", "baseZIndex", "panelStyleClass", "panelStyle", "keepInvalid", "hideOnDateTimeSelect", "touchUI", "timeSeparator", "focusTrap", "showTransitionOptions", "hideTransitionOptions", "tabindex", "minDate", "maxDate", "disabledDates", "disabledDays", "showTime", "responsiveOptions", "numberOfMonths", "firstDayOfWeek", "view", "defaultDate", "appendTo", "motionOptions"], outputs: ["onFocus", "onBlur", "onClose", "onSelect", "onClear", "onInput", "onTodayClick", "onClearClick", "onMonthChange", "onYearChange", "onClickOutside", "onShow"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: DateFieldInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-date-field-input', standalone: true, imports: [FormsModule, DatePicker], changeDetection: ChangeDetectionStrategy.OnPush, template: "<!-- Bound to `displayValue` rather than to `value` so the control's own text is not repainted\n     under the user while they are typing a date \u2014 see its doc. `ngModelChange` still reports\n     every keystroke, so the value this renderer publishes is unaffected. -->\n<p-datepicker\n  [inputId]=\"inputId()\"\n  [ngModel]=\"displayValue()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"onFocus()\"\n  (onBlur)=\"onBlur()\"\n  (onInput)=\"onTextInput($event)\"\n  [dateFormat]=\"config().dateFormat\"\n  [selectionMode]=\"config().selectionMode\"\n  [showTime]=\"config().showTime\"\n  [hourFormat]=\"config().hourFormat\"\n  [showSeconds]=\"config().showSeconds\"\n  [stepMinute]=\"config().stepMinute\"\n  [showIcon]=\"config().showIcon\"\n  [iconDisplay]=\"config().iconDisplay\"\n  [minDate]=\"minDate()\"\n  [maxDate]=\"maxDate()\"\n  [numberOfMonths]=\"config().numberOfMonths\"\n  [showButtonBar]=\"config().showButtonBar\"\n  [showClear]=\"config().showClear\"\n  [readonlyInput]=\"config().readonlyInput\"\n  [inline]=\"config().inline\"\n  [view]=\"config().view\"\n  [placeholder]=\"config().placeholder\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  appendTo=\"body\"\n/>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep .p-datepicker,:host ::ng-deep input{width:100%}\n"] }]
+        }], ctorParameters: () => [], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], picker: [{ type: i0.ViewChild, args: [i0.forwardRef(() => DatePicker), { isSignal: true }] }] } });
+/** Local midnight today. Built from the parts rather than by zeroing a timestamp, for the reason
+    `formatLocalDate` gives: a date-only bound has to mean the local day, not a UTC one. */
+function startOfToday() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+/** The last second of today, so a past-only field with a time on it still accepts the hours that
+    have already passed. */
+function endOfToday() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+}
+/** The tighter of two lower bounds, either of which may be absent. */
+function laterOf(left, right) {
+    if (left === null || right === null) {
+        return left ?? right;
+    }
+    return left.getTime() >= right.getTime() ? left : right;
+}
+/** The tighter of two upper bounds, either of which may be absent. */
+function earlierOf(left, right) {
+    if (left === null || right === null) {
+        return left ?? right;
+    }
+    return left.getTime() <= right.getTime() ? left : right;
+}
+
+/** Separates the dates of a `selectionMode: 'multiple'` value. */
+const MULTIPLE_DATE_SEPARATOR = ',';
+/** Separates the two ends of a `selectionMode: 'range'` value. Either side may be empty, so a
+    half-picked range still round-trips rather than being discarded. */
+const DATE_RANGE_SEPARATOR = '/';
+/**
  * Which renderer draws which `fieldType`.
  *
- * **Spike slice** — the text kind only. The full registry in the admin app carries nine kinds
- * across nineteen wire types; this one exists to prove the packaging chain end to end, so it
- * carries the four wire types that share the text renderer and nothing else. An unregistered type
- * is not an error: {@link FieldInputComponent} falls back to a plain textarea, exactly as it does
- * in the admin today.
+ * Six of the nine kinds, across sixteen wire types. Still absent, and each for its own reason:
+ * `textarea` and `currency` have not been extracted from the admin app yet, and `media` draws a
+ * placeholder that edits nothing, so it is worth nothing to a consumer until the media picker
+ * itself moves. An unregistered type is not an error: {@link FieldInputComponent} falls back to a
+ * plain textarea, exactly as it does in the admin today.
  *
  * Note what is absent compared with the admin's copy: `editor`. Config editors are authoring UI
  * and stay in that app — see the note in `field-renderer-contract.ts`.
@@ -1254,12 +2155,38 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
  * fails to compile — the drift this package exists to prevent, caught at the registration site.
  * `Partial` because the page-widget types are deliberately never registered here: nothing in this
  * package can draw one.
+ *
+ * Several types deliberately share one renderer, differing only in the config seeded below —
+ * `Text`/`Email`/`Phone`/`Url`, `Number`/`Decimal`, and `DatePicker` with the two retired date
+ * types at the end of the map. See `FieldRendererKind`.
  */
 const FIELD_DEFINITION_TYPE_RENDERERS = {
     Text: textFieldRenderer(),
     Email: textFieldRenderer({ inputType: 'email', placeholder: 'name@example.com' }),
     Phone: textFieldRenderer({ inputType: 'tel' }),
     Url: textFieldRenderer({ inputType: 'url', placeholder: 'https://' }),
+    Number: numberFieldRenderer({ maxFractionDigits: 0, step: 1 }),
+    Decimal: numberFieldRenderer({ minFractionDigits: 2, maxFractionDigits: 2, step: 0.01 }),
+    Checkbox: checkboxFieldRenderer(),
+    DatePicker: dateFieldRenderer(),
+    RadioButton: radioFieldRenderer(),
+    Dropdown: selectFieldRenderer(),
+    // Retired from the dropdown, kept readable here. Each was replaced by a type above that does
+    // the same job — `Date`/`DateTime` by `DatePicker`, `Select` by `RadioButton`, `MultiSelect` by
+    // `CheckboxGroup`. These are not aliases for convenience: a saved field's type can never be
+    // changed (`fieldType` is disabled on edit), so without them every field already in an account
+    // of one of these types would fall through to the raw-JSON textarea for good. `DateTime` keeps
+    // its old seed so such a field still opens with time switched on.
+    //
+    // `Select` stays pointed at the radio renderer even now that `Dropdown` exists: repointing it
+    // would change what every field already saved as a `Select` draws, which is the one thing
+    // keeping these entries is meant to prevent. `Dropdown` is where a new field of that shape goes.
+    Date: dateFieldRenderer(),
+    DateTime: dateFieldRenderer({ showTime: true, hourFormat: '12' }),
+    Select: radioFieldRenderer(),
+    Boolean: checkboxFieldRenderer({ checkboxType: 'single' }),
+    MultiSelect: checkboxFieldRenderer({ checkboxType: 'group' }),
+    CheckboxGroup: checkboxFieldRenderer({ checkboxType: 'group' }),
 };
 /**
  * The descriptor for `fieldType`, or null for a type with no renderer.
@@ -1272,7 +2199,7 @@ function findFieldRenderer(fieldType) {
     // parameter would push the unchecked cast out to every caller instead of containing it here,
     // where `Object.hasOwn` is the check that makes it true.
     return Object.hasOwn(FIELD_DEFINITION_TYPE_RENDERERS, fieldType)
-        ? FIELD_DEFINITION_TYPE_RENDERERS[fieldType] ?? null
+        ? (FIELD_DEFINITION_TYPE_RENDERERS[fieldType] ?? null)
         : null;
 }
 /** Whether `fieldType` has a typed renderer. */
@@ -1302,6 +2229,187 @@ function textFieldRenderer(overrides = {}) {
         serialize: (value) => value,
         deserialize: (raw) => raw,
     });
+}
+function numberFieldRenderer(overrides = {}) {
+    const defaultConfig = { ...DEFAULT_NUMBER_FIELD_CONFIG, ...overrides };
+    return eraseFieldRenderer({
+        kind: 'number',
+        renderer: NumberFieldInputComponent,
+        defaultConfig,
+        parse: (json) => parseNumberFieldConfig(json, defaultConfig),
+        // Config-independent on purpose: grouping, prefix and fraction digits are all display
+        // settings, so the stored value stays plain digits and a config change never needs the data
+        // rewritten. See `formatPlainNumber`.
+        serialize: (value) => formatPlainNumber(value),
+        deserialize: (raw) => parseFiniteNumber(raw),
+    });
+}
+function checkboxFieldRenderer(overrides = {}) {
+    const defaultConfig = { ...DEFAULT_CHECKBOX_FIELD_CONFIG, ...overrides };
+    return eraseFieldRenderer({
+        kind: 'checkbox',
+        renderer: CheckboxFieldInputComponent,
+        defaultConfig,
+        parse: (json) => parseCheckboxFieldConfig(json, defaultConfig),
+        // The one codec here that branches on its config rather than merely reading a format from it:
+        // `Checkbox` is a single field type covering two controls, so `checkboxType` decides whether a
+        // value is a tri-state boolean or a list of ticked values. See `CheckboxFieldValue`.
+        serialize: (value, config) => {
+            if (config.checkboxType === 'group') {
+                return Array.isArray(value) ? value.join(CHECKBOX_VALUE_SEPARATOR) : '';
+            }
+            if (typeof value !== 'boolean') {
+                return '';
+            }
+            return value ? config.trueText : config.falseText;
+        },
+        deserialize: (raw, config) => {
+            if (config.checkboxType === 'group') {
+                const stored = new Set(raw
+                    .split(CHECKBOX_VALUE_SEPARATOR)
+                    .map((part) => part.trim())
+                    .filter((part) => part !== ''));
+                // Ordered by the config rather than by the stored string, so the boxes read top to bottom
+                // however the value was written. An option since removed is dropped, which
+                // `FieldInputComponent` then reports as unreadable rather than silently rewriting.
+                return config.options.map((option) => option.value).filter((value) => stored.has(value));
+            }
+            const parsed = parseLooseBoolean(raw, config.trueText, config.falseText);
+            // A binary box has no third state to show, so an unreadable value has to land somewhere;
+            // false is the only honest choice, and `FieldInputComponent` flags it as unreadable so the
+            // stored text survives untouched. A tri-state box keeps the null.
+            if (parsed === null && !config.triState && raw.trim() !== '') {
+                return false;
+            }
+            return parsed;
+        },
+    });
+}
+function radioFieldRenderer(overrides = {}) {
+    const defaultConfig = { ...DEFAULT_RADIO_FIELD_CONFIG, ...overrides };
+    return eraseFieldRenderer({
+        kind: 'radio',
+        renderer: RadioFieldInputComponent,
+        defaultConfig,
+        parse: (json) => parseRadioFieldConfig(json, defaultConfig),
+        serialize: (value) => value ?? '',
+        // Only a value the field still offers is accepted. A stored option that has since been
+        // removed comes back as null, which `FieldInputComponent` reports as unreadable rather than
+        // silently clearing — the old value stays stored until someone picks a new one.
+        deserialize: (raw, config) => {
+            const value = raw.trim();
+            return config.options.some((option) => option.value === value) ? value : null;
+        },
+    });
+}
+function selectFieldRenderer(overrides = {}) {
+    const defaultConfig = { ...DEFAULT_SELECT_FIELD_CONFIG, ...overrides };
+    return eraseFieldRenderer({
+        kind: 'select',
+        renderer: SelectFieldInputComponent,
+        defaultConfig,
+        parse: (json) => parseSelectFieldConfig(json, defaultConfig),
+        // The second codec here that branches on its config rather than merely reading a format from
+        // it, for the same reason the checkbox one does: `Dropdown` is a single field type covering
+        // two controls, so `selectionMode` decides whether a value is one option or a list of them.
+        // See `SelectFieldValue`.
+        serialize: (value, config) => {
+            if (config.selectionMode === 'multiple') {
+                return Array.isArray(value) ? value.join(SELECT_VALUE_SEPARATOR) : '';
+            }
+            return typeof value === 'string' ? value : '';
+        },
+        // Only values the field still offers are accepted, in either mode. A stored option that has
+        // since been removed is dropped, which `FieldInputComponent` then reports as unreadable rather
+        // than silently rewriting — the old value stays stored until someone picks a new one.
+        deserialize: (raw, config) => {
+            if (config.selectionMode === 'multiple') {
+                const stored = new Set(raw
+                    .split(SELECT_VALUE_SEPARATOR)
+                    .map((part) => part.trim())
+                    .filter((part) => part !== ''));
+                // Ordered by the config rather than by the stored string, so the picks read in the
+                // authored order however the value was written. Round-trip stability survives that
+                // reordering because the requirement is on this pair's *own* output:
+                // `serialize(deserialize(serialize(v)))` is already in config order by the second pass.
+                return config.options.map((option) => option.value).filter((value) => stored.has(value));
+            }
+            const value = raw.trim();
+            return config.options.some((option) => option.value === value) ? value : null;
+        },
+    });
+}
+function dateFieldRenderer(overrides = {}) {
+    const defaultConfig = { ...DEFAULT_DATE_FIELD_CONFIG, ...overrides };
+    return eraseFieldRenderer({
+        kind: 'date',
+        renderer: DateFieldInputComponent,
+        defaultConfig,
+        parse: (json) => parseDateFieldConfig(json, defaultConfig),
+        serialize: (value, config) => serializeDateValue(value, config),
+        deserialize: (raw, config) => deserializeDateValue(raw, config),
+    });
+}
+/**
+ * A date value as the wire holds it.
+ *
+ * Always naive and local — never `toISOString()`. See `formatLocalDate` for why: a date-only
+ * field picked as the 1st in any negative-offset zone would otherwise store the 31st of the
+ * previous month.
+ *
+ * `selectionMode` decides the shape, which is why the codec needs the config at all. A range
+ * keeps its separator even when half-picked, so `2026-01-01/` round-trips rather than collapsing
+ * into a single date.
+ */
+function serializeDateValue(value, config) {
+    const format = config.showTime ? formatLocalDateTime : formatLocalDate;
+    if (config.selectionMode === 'range') {
+        const [start, end] = Array.isArray(value) ? value : [value, null];
+        const startText = start instanceof Date ? format(start) : '';
+        const endText = end instanceof Date ? format(end) : '';
+        return startText === '' && endText === ''
+            ? ''
+            : `${startText}${DATE_RANGE_SEPARATOR}${endText}`;
+    }
+    if (config.selectionMode === 'multiple') {
+        const dates = Array.isArray(value) ? value : value === null ? [] : [value];
+        return dates
+            .filter((date) => date instanceof Date)
+            .map((date) => format(date))
+            .join(MULTIPLE_DATE_SEPARATOR);
+    }
+    // 'single'. An array here means the field's mode changed under stored data; the first date is
+    // the most useful reading of it.
+    const single = Array.isArray(value) ? (value[0] ?? null) : value;
+    return single instanceof Date ? format(single) : '';
+}
+/** The dates a stored value means. Never throws: an unreadable value is null, which
+    `FieldInputComponent` reports rather than repairing. */
+function deserializeDateValue(raw, config) {
+    const value = raw.trim();
+    if (value === '') {
+        return null;
+    }
+    if (config.selectionMode === 'range') {
+        const [startText = '', endText = ''] = value.split(DATE_RANGE_SEPARATOR);
+        const start = parseLocalDateish(startText);
+        const end = parseLocalDateish(endText);
+        if (start === null && end === null) {
+            return null;
+        }
+        // Both slots, nulls kept: `p-datepicker` reads range mode as a two-slot array and fills the
+        // second on the user's next click. Dropping a null end would make the control think the
+        // range was complete.
+        return [start, end];
+    }
+    if (config.selectionMode === 'multiple') {
+        const dates = value
+            .split(MULTIPLE_DATE_SEPARATOR)
+            .map((part) => parseLocalDateish(part))
+            .filter((date) => date !== null);
+        return dates.length === 0 ? null : dates;
+    }
+    return parseLocalDateish(value);
 }
 
 /**
@@ -1472,7 +2580,7 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
 /*
  * Public API Surface of velocity-core-renderer
  *
- * Spike slice: the text kind only. See `built-in-field-renderers.ts`.
+ * Six of the nine kinds. See `built-in-field-renderers.ts` for what is still absent and why.
  */
 // Contract
 
@@ -1480,5 +2588,5 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
  * Generated bundle index. Do not edit.
  */
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, clearedCheckboxModeSettings, collectExtras, eraseFieldRenderer, findFieldRenderer, hasBlankChoiceValue, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, sortChoiceOptions, textFieldRenderer, toFieldConfigJson };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, toFieldConfigJson };
 //# sourceMappingURL=velocity-core-renderer.mjs.map
