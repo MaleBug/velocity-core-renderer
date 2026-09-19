@@ -11,6 +11,7 @@ import { InputIcon } from 'primeng/inputicon';
 import { InputMask } from 'primeng/inputmask';
 import { InputText } from 'primeng/inputtext';
 import { Password } from 'primeng/password';
+import { Textarea } from 'primeng/textarea';
 import { InputNumber } from 'primeng/inputnumber';
 import { Checkbox } from 'primeng/checkbox';
 import * as i2 from 'primeng/button';
@@ -19,7 +20,6 @@ import { RadioButton } from 'primeng/radiobutton';
 import { MultiSelect } from 'primeng/multiselect';
 import { Select } from 'primeng/select';
 import { DatePicker } from 'primeng/datepicker';
-import { Textarea } from 'primeng/textarea';
 
 /**
  * Erases a typed descriptor for the registry.
@@ -82,16 +82,37 @@ const RENDERER_BINDINGS = {
 /**
  * How large the rendered control is drawn.
  *
- * `''` means "whatever the theme's default is" and is not the same as `'small'` — PrimeNG's own
- * input is `'small' | 'large' | undefined`, so the empty string is translated to `undefined` at
- * the binding rather than being passed through.
+ * `'medium'` is the theme's own normal size, and PrimeNG spells that `undefined` — its `size` input
+ * is `'small' | 'large' | undefined`, so each renderer translates the middle member at the binding
+ * rather than passing it through. It is named here anyway because a menu reading
+ * Small/Medium/Large says what the middle choice *is*, where the `''`/"Default" it replaced only
+ * said what it was not.
  */
-const FIELD_INPUT_SIZES = ['', 'small', 'large'];
+const FIELD_INPUT_SIZES = ['small', 'medium', 'large'];
 const FIELD_INPUT_SIZE_OPTIONS = [
-    { label: 'Default', value: '' },
     { label: 'Small', value: 'small' },
+    { label: 'Medium', value: 'medium' },
     { label: 'Large', value: 'large' },
 ];
+/**
+ * The sizes a *saved* config may hold — the three above plus the `''` they used to include.
+ *
+ * Parsing has to be wider than authoring here. Every field authored before Medium existed stored
+ * `''` for "the theme's normal size", and that is now spelled `'medium'`: reading those against
+ * {@link FIELD_INPUT_SIZES} alone would reject the value and fall back to the default, which is
+ * now `'small'` — quietly shrinking every such field the next time its config was read.
+ */
+const STORED_FIELD_INPUT_SIZES = ['', ...FIELD_INPUT_SIZES];
+/**
+ * A saved size in the authored vocabulary — `''` read as the `'medium'` it always meant.
+ *
+ * Applied at parse time rather than by rewriting saved configs, so a field keeps drawing at the
+ * size it has always drawn at without anything having to migrate it. Its config is rewritten in
+ * full the first time someone saves the field, at which point the `''` goes away on its own.
+ */
+function normalizeFieldInputSize(size) {
+    return size === '' ? 'medium' : size;
+}
 /** Whether the choices stack or sit in a row. Shared by every options-based field. */
 const CHOICE_ORIENTATIONS = ['vertical', 'horizontal'];
 const CHOICE_ORIENTATION_OPTIONS = [
@@ -657,7 +678,7 @@ const DEFAULT_TEXT_FIELD_CONFIG = {
     suffix: '',
     showToggleVisibility: true,
     mask: '',
-    size: '',
+    size: 'small',
     extra: {},
 };
 /**
@@ -691,7 +712,7 @@ function parseTextFieldConfig(json, defaults) {
         suffix: suffix.value,
         showToggleVisibility: readBoolean(source['showToggleVisibility'], defaults.showToggleVisibility),
         mask: readString(source['mask'], defaults.mask),
-        size: readOption(source['size'], FIELD_INPUT_SIZES, defaults.size),
+        size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
         extra,
     };
 }
@@ -721,7 +742,7 @@ const DEFAULT_TEXTAREA_FIELD_CONFIG = {
     rows: 5,
     maxLength: null,
     autoResize: false,
-    size: '',
+    size: 'small',
     extra: {},
 };
 /** A saved textarea config, defaulting every member it cannot read. See `parseTextFieldConfig`
@@ -736,7 +757,7 @@ function parseTextareaFieldConfig(json, defaults) {
         rows: readNumber(source['rows'], defaults.rows),
         maxLength: readNullableNumber(source['maxLength'], defaults.maxLength),
         autoResize: readBoolean(source['autoResize'], defaults.autoResize),
-        size: readOption(source['size'], FIELD_INPUT_SIZES, defaults.size),
+        size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
         extra: collectExtras(source, defaults),
     };
 }
@@ -793,7 +814,7 @@ const DEFAULT_NUMBER_FIELD_CONFIG = {
     locale: '',
     negativeFormat: 'negative',
     showNegativeInRed: false,
-    size: '',
+    size: 'small',
     extra: {},
 };
 /** A saved number config, defaulting every member it cannot read. See `parseTextFieldConfig` for
@@ -821,7 +842,7 @@ function parseNumberFieldConfig(json, defaults) {
         locale: readString(source['locale'], defaults.locale),
         negativeFormat: readOption(source['negativeFormat'], NUMBER_NEGATIVE_FORMATS, defaults.negativeFormat),
         showNegativeInRed: readBoolean(source['showNegativeInRed'], defaults.showNegativeInRed),
-        size: readOption(source['size'], FIELD_INPUT_SIZES, defaults.size),
+        size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
         extra: collectExtras(source, defaults),
     };
 }
@@ -848,7 +869,7 @@ const DEFAULT_CURRENCY_FIELD_CONFIG = {
     placeholder: '',
     showClear: false,
     allowEmpty: true,
-    size: '',
+    size: 'small',
     extra: {},
 };
 /**
@@ -884,7 +905,7 @@ function parseCurrencyFieldConfig(json, defaults) {
         placeholder: readString(source['placeholder'], defaults.placeholder),
         showClear: readBoolean(source['showClear'], defaults.showClear),
         allowEmpty: readBoolean(source['allowEmpty'], defaults.allowEmpty),
-        size: readOption(source['size'], FIELD_INPUT_SIZES, defaults.size),
+        size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
         extra: collectExtras(source, defaults),
     };
 }
@@ -930,7 +951,7 @@ const DEFAULT_CHECKBOX_FIELD_CONFIG = {
     sortChoices: 'none',
     minSelected: 0,
     maxSelected: 0,
-    size: '',
+    size: 'small',
     extra: {},
 };
 /**
@@ -966,7 +987,7 @@ function parseCheckboxFieldConfig(json, defaults) {
         sortChoices: readOption(source['sortChoices'], CHOICE_SORTS, defaults.sortChoices),
         minSelected: readCount(source['minSelected'], defaults.minSelected),
         maxSelected: readCount(source['maxSelected'], defaults.maxSelected),
-        size: readOption(source['size'], FIELD_INPUT_SIZES, defaults.size),
+        size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
         extra: collectExtras(source, defaults),
     };
 }
@@ -981,7 +1002,7 @@ const DEFAULT_RADIO_FIELD_CONFIG = {
     orientation: 'vertical',
     sortChoices: 'none',
     allowClear: false,
-    size: '',
+    size: 'small',
     extra: {},
 };
 /** A saved radio config, defaulting every member it cannot read. */
@@ -995,7 +1016,7 @@ function parseRadioFieldConfig(json, defaults) {
         orientation: readOption(source['orientation'], CHOICE_ORIENTATIONS, defaults.orientation),
         sortChoices: readOption(source['sortChoices'], CHOICE_SORTS, defaults.sortChoices),
         allowClear: readBoolean(source['allowClear'], defaults.allowClear),
-        size: readOption(source['size'], FIELD_INPUT_SIZES, defaults.size),
+        size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
         extra: collectExtras(source, defaults),
     };
 }
@@ -1039,7 +1060,7 @@ const DEFAULT_SELECT_FIELD_CONFIG = {
     filterPlaceholder: '',
     checkmark: false,
     highlightOnSelect: true,
-    size: '',
+    size: 'small',
     extra: {},
 };
 /** A saved select config, defaulting every member it cannot read. */
@@ -1058,7 +1079,7 @@ function parseSelectFieldConfig(json, defaults) {
         filterPlaceholder: readString(source['filterPlaceholder'], defaults.filterPlaceholder),
         checkmark: readBoolean(source['checkmark'], defaults.checkmark),
         highlightOnSelect: readBoolean(source['highlightOnSelect'], defaults.highlightOnSelect),
-        size: readOption(source['size'], FIELD_INPUT_SIZES, defaults.size),
+        size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
         extra: collectExtras(source, defaults),
     };
 }
@@ -1323,11 +1344,12 @@ const MEDIA_FILE_EXTENSION_OPTIONS = MEDIA_FILE_EXTENSION_GROUPS.map((group) => 
  * How large the placeholder is drawn.
  *
  * Deliberately **not** `FIELD_INPUT_SIZES` from `field-definition-type-common.model.ts`, which the
- * six other configs share. That one is `'' | 'small' | 'large'` because it is handed straight to a
- * PrimeNG control's `size` input, and its empty member means "whatever the theme's default is".
- * A `Media` field draws an icon rather than a PrimeNG control, so there is no control default to
- * defer to — every value here names a size, and the middle one is a real choice rather than an
- * absent one.
+ * six other configs share — even though the two now spell the same three values. That one is
+ * handed to a PrimeNG control's `size` input, whose vocabulary is `'small' | 'large' | undefined`,
+ * so its `'medium'` is translated away at the binding and exists to give the theme's own size a
+ * name. A `Media` field draws an icon rather than a PrimeNG control: every value here is applied
+ * as a CSS class of its own, and `'medium'` is a size this file defines rather than one it defers
+ * on. Sharing the constant would tie a glyph scale to whatever PrimeNG's control scale does next.
  */
 const MEDIA_PREVIEW_SIZES = ['small', 'medium', 'large'];
 const MEDIA_PREVIEW_SIZE_OPTIONS = [
@@ -1340,7 +1362,7 @@ const DEFAULT_MEDIA_FIELD_CONFIG = {
     // is the one that cannot silently reject a file an admin never thought to allow.
     fileExtensions: [...MEDIA_FILE_EXTENSIONS],
     maxFileSizeMb: 5,
-    previewSize: 'medium',
+    previewSize: 'small',
     fieldTypeOptions: [],
     extra: {},
 };
@@ -1490,8 +1512,11 @@ class TextFieldInputComponent {
                 return null;
         }
     }, ...(ngDevMode ? [{ debugName: "inputMode" }] : /* istanbul ignore next */ []));
-    /** `''` means "theme default", which PrimeNG spells as `undefined`. */
-    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    primeSize = computed(() => {
+        const size = this.config().size;
+        return size === 'medium' ? undefined : size;
+    }, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
     /** `p-inputmask` emits null for a cleared control; the wire value for text is `''`. */
     onValueChange(next) {
         this.value.set(next ?? '');
@@ -1528,6 +1553,37 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
                         InputText,
                         Password,
                     ], changeDetection: ChangeDetectionStrategy.OnPush, template: "<!-- Declared once and outlet-ed below, so the grouped, icon-wrapped and bare shapes cannot drift\n     apart in their bindings. -->\n<ng-template #plainInput>\n  <input\n    pInputText\n    [id]=\"inputId()\"\n    [type]=\"config().inputType\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (blur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [attr.maxlength]=\"config().maxLength\"\n    [attr.inputmode]=\"inputMode()\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [pSize]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The password shape. `p-password` is what draws the eye, and `feedback` is off because a\n     strength meter is advice about a password being chosen \u2014 this control edits a stored field\n     value, which is not the same thing. -->\n<ng-template #passwordInput>\n  <p-password\n    [inputId]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [maxLength]=\"config().maxLength ?? undefined\"\n    [toggleMask]=\"true\"\n    [feedback]=\"false\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The masked shape. Its own control rather than an attribute on the plain input, and like\n     `p-password` it wraps the real input in a host element of its own \u2014 which is why an affix\n     beside it has to be an input-group addon rather than an icon inside the field. See `shape`. -->\n<ng-template #maskInput>\n  <p-inputmask\n    [inputId]=\"inputId()\"\n    [mask]=\"config().mask\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- Which of the three the wrappers below draw. See `innerControl`. -->\n<ng-template #control>\n  @switch (innerControl()) {\n    @case ('mask') {\n      <ng-container [ngTemplateOutlet]=\"maskInput\" />\n    }\n    @case ('password') {\n      <ng-container [ngTemplateOutlet]=\"passwordInput\" />\n    }\n    @default {\n      <ng-container [ngTemplateOutlet]=\"plainInput\" />\n    }\n  }\n</ng-template>\n\n@switch (shape()) {\n  @case ('group') {\n    <p-inputgroup>\n      @if (prefixText() !== '') {\n        <p-inputgroup-addon>{{ prefixText() }}</p-inputgroup-addon>\n      } @else if (prefixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"prefixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixText() !== '') {\n        <p-inputgroup-addon>{{ suffixText() }}</p-inputgroup-addon>\n      } @else if (suffixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"suffixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n    </p-inputgroup>\n  }\n  @case ('iconfield') {\n    <p-iconfield [iconPosition]=\"iconPosition()\">\n      @if (prefixIcon() !== '') {\n        <p-inputicon [styleClass]=\"prefixIcon()\" />\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixIcon() !== '') {\n        <p-inputicon [styleClass]=\"suffixIcon()\" />\n      }\n    </p-iconfield>\n  }\n  @default {\n    <ng-container [ngTemplateOutlet]=\"control\" />\n  }\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;min-width:0}:host ::ng-deep input,:host ::ng-deep .p-iconfield,:host ::ng-deep .p-inputmask,:host ::ng-deep .p-password{width:100%}\n"] }]
+        }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], blurred: [{ type: i0.Output, args: ["blurred"] }] } });
+
+/**
+ * Draws a multi-line text field, for the `TextArea` type.
+ *
+ * `rows`, `placeholder` and `maxlength` are native attributes — `pTextarea` is a directive, and
+ * only `autoResize` and `pSize` are Angular inputs on it. That means a misspelling among the
+ * former is not caught by `strictTemplates`.
+ */
+class TextareaFieldInputComponent {
+    config = input.required(...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    value = model('', ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    /** Fires once the user leaves the control. The textarea codec is identity, so `value` is already
+        settled by the time this emits — there is no rounding or repainting to wait for here. */
+    blurred = output();
+    inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    primeSize = computed(() => {
+        const size = this.config().size;
+        return size === 'medium' ? undefined : size;
+    }, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: TextareaFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.1.0", version: "21.2.23", type: TextareaFieldInputComponent, isStandalone: true, selector: "vcr-textarea-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", blurred: "blurred" }, ngImport: i0, template: "<!-- `pSize` is asserted non-null below because `Textarea` declares it as `'large' | 'small'`\n     while `InputText` declares the same input as `'large' | 'small' | undefined` \u2014 a PrimeNG\n     typing inconsistency rather than a real constraint. Both are `isRequired: false`, and the\n     directive only ever compares the value by equality, so undefined is exactly \"theme\n     default\". -->\n<textarea\n  pTextarea\n  [id]=\"inputId()\"\n  [ngModel]=\"value()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"value.set($event ?? '')\"\n  (blur)=\"blurred.emit()\"\n  [rows]=\"config().rows\"\n  [placeholder]=\"config().placeholder\"\n  [attr.maxlength]=\"config().maxLength\"\n  [autoResize]=\"config().autoResize\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  [pSize]=\"primeSize()!\"\n></textarea>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep textarea{width:100%}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.DefaultValueAccessor, selector: "input:not([type=checkbox])[formControlName],textarea[formControlName],input:not([type=checkbox])[formControl],textarea[formControl],input:not([type=checkbox])[ngModel],textarea[ngModel],[ngDefaultControl]" }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "directive", type: Textarea, selector: "[pTextarea], [pInputTextarea]", inputs: ["pTextareaPT", "pTextareaUnstyled", "autoResize", "pSize", "variant", "fluid", "invalid"], outputs: ["onResize"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: TextareaFieldInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-textarea-field-input', standalone: true, imports: [FormsModule, Textarea], changeDetection: ChangeDetectionStrategy.OnPush, template: "<!-- `pSize` is asserted non-null below because `Textarea` declares it as `'large' | 'small'`\n     while `InputText` declares the same input as `'large' | 'small' | undefined` \u2014 a PrimeNG\n     typing inconsistency rather than a real constraint. Both are `isRequired: false`, and the\n     directive only ever compares the value by equality, so undefined is exactly \"theme\n     default\". -->\n<textarea\n  pTextarea\n  [id]=\"inputId()\"\n  [ngModel]=\"value()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"value.set($event ?? '')\"\n  (blur)=\"blurred.emit()\"\n  [rows]=\"config().rows\"\n  [placeholder]=\"config().placeholder\"\n  [attr.maxlength]=\"config().maxLength\"\n  [autoResize]=\"config().autoResize\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  [pSize]=\"primeSize()!\"\n></textarea>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep textarea{width:100%}\n"] }]
         }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], blurred: [{ type: i0.Output, args: ["blurred"] }] } });
 
 /**
@@ -1591,7 +1647,11 @@ class NumberFieldInputComponent {
     }, ...(ngDevMode ? [{ debugName: "maxFractionDigits" }] : /* istanbul ignore next */ []));
     /** `''` means "follow the browser", which `p-inputnumber` spells as `undefined`. */
     locale = computed(() => this.config().locale || undefined, ...(ngDevMode ? [{ debugName: "locale" }] : /* istanbul ignore next */ []));
-    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    primeSize = computed(() => {
+        const size = this.config().size;
+        return size === 'medium' ? undefined : size;
+    }, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
     /** Zero is not negative, and neither is an empty control — `-0 < 0` is false, which is the
         answer wanted here. */
     isNegative = computed(() => {
@@ -1770,7 +1830,11 @@ class CheckboxFieldInputComponent {
     isGroup = computed(() => this.config().checkboxType === 'group', ...(ngDevMode ? [{ debugName: "isGroup" }] : /* istanbul ignore next */ []));
     /** The control's `id` in single mode, and the stem of each box's id in group mode. */
     inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
-    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    primeSize = computed(() => {
+        const size = this.config().size;
+        return size === 'medium' ? undefined : size;
+    }, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
     /** The boxes in the order `sortChoices` asks for, in group mode. Only the drawing order changes:
         a stored selection is a set of values and does not depend on it. */
     options = computed(() => sortChoiceOptions(this.config().options, this.config().sortChoices), ...(ngDevMode ? [{ debugName: "options" }] : /* istanbul ignore next */ []));
@@ -1867,7 +1931,11 @@ class RadioFieldInputComponent {
     /** The choices in the order `sortChoices` asks for. Computed rather than sorted in the template,
         so the array identity only changes when the config does. */
     options = computed(() => sortChoiceOptions(this.config().options, this.config().sortChoices), ...(ngDevMode ? [{ debugName: "options" }] : /* istanbul ignore next */ []));
-    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    primeSize = computed(() => {
+        const size = this.config().size;
+        return size === 'medium' ? undefined : size;
+    }, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
     canClear = computed(() => this.config().allowClear && this.value() !== null, ...(ngDevMode ? [{ debugName: "canClear" }] : /* istanbul ignore next */ []));
     optionId(value) {
         return `${this.groupName()}-${value}`;
@@ -1923,7 +1991,11 @@ class SelectFieldInputComponent {
         ...sortChoiceOptions(this.config().options, this.config().sortChoices),
     ], ...(ngDevMode ? [{ debugName: "options" }] : /* istanbul ignore next */ []));
     isMultiple = computed(() => this.config().selectionMode === 'multiple', ...(ngDevMode ? [{ debugName: "isMultiple" }] : /* istanbul ignore next */ []));
-    primeSize = computed(() => this.config().size || undefined, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    primeSize = computed(() => {
+        const size = this.config().size;
+        return size === 'medium' ? undefined : size;
+    }, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
     /** `''` means "leave PrimeNG's own default", which an empty string would instead overwrite with
         a blank. Same translation `primeSize` makes. */
     placeholder = computed(() => this.config().placeholder || undefined, ...(ngDevMode ? [{ debugName: "placeholder" }] : /* istanbul ignore next */ []));
@@ -2142,11 +2214,11 @@ const DATE_RANGE_SEPARATOR = '/';
 /**
  * Which renderer draws which `fieldType`.
  *
- * Six of the nine kinds, across sixteen wire types. Still absent, and each for its own reason:
- * `textarea` and `currency` have not been extracted from the admin app yet, and `media` draws a
- * placeholder that edits nothing, so it is worth nothing to a consumer until the media picker
- * itself moves. An unregistered type is not an error: {@link FieldInputComponent} falls back to a
- * plain textarea, exactly as it does in the admin today.
+ * Seven of the nine kinds, across seventeen wire types. Still absent: `currency` has not been
+ * extracted from the admin app yet, and `media` draws a placeholder that edits nothing, so it is
+ * worth nothing to a consumer until the media picker itself moves. An unregistered type is not an
+ * error: {@link FieldInputComponent} falls back to a plain textarea, exactly as it does in the
+ * admin today.
  *
  * Note what is absent compared with the admin's copy: `editor`. Config editors are authoring UI
  * and stay in that app — see the note in `field-renderer-contract.ts`.
@@ -2167,6 +2239,7 @@ const FIELD_DEFINITION_TYPE_RENDERERS = {
     Url: textFieldRenderer({ inputType: 'url', placeholder: 'https://' }),
     Number: numberFieldRenderer({ maxFractionDigits: 0, step: 1 }),
     Decimal: numberFieldRenderer({ minFractionDigits: 2, maxFractionDigits: 2, step: 0.01 }),
+    TextArea: textareaFieldRenderer(),
     Checkbox: checkboxFieldRenderer(),
     DatePicker: dateFieldRenderer(),
     RadioButton: radioFieldRenderer(),
@@ -2226,6 +2299,18 @@ function textFieldRenderer(overrides = {}) {
         // Identity both ways: the in-memory value and the wire value are the same string. No trim —
         // a trailing space can be meaningful in content, and normalising one away here would rewrite
         // a value the user did not touch.
+        serialize: (value) => value,
+        deserialize: (raw) => raw,
+    });
+}
+function textareaFieldRenderer(overrides = {}) {
+    const defaultConfig = { ...DEFAULT_TEXTAREA_FIELD_CONFIG, ...overrides };
+    return eraseFieldRenderer({
+        kind: 'textarea',
+        renderer: TextareaFieldInputComponent,
+        defaultConfig,
+        parse: (json) => parseTextareaFieldConfig(json, defaultConfig),
+        // Identity both ways, exactly like `text` — see `textFieldRenderer` for why no trim.
         serialize: (value) => value,
         deserialize: (raw) => raw,
     });
@@ -2580,7 +2665,7 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
 /*
  * Public API Surface of velocity-core-renderer
  *
- * Six of the nine kinds. See `built-in-field-renderers.ts` for what is still absent and why.
+ * Seven of the nine kinds. See `built-in-field-renderers.ts` for what is still absent and why.
  */
 // Contract
 
@@ -2588,5 +2673,5 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
  * Generated bundle index. Do not edit.
  */
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, toFieldConfigJson };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textareaFieldRenderer, toFieldConfigJson };
 //# sourceMappingURL=velocity-core-renderer.mjs.map

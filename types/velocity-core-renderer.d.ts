@@ -134,13 +134,33 @@ interface ConfigSelectOptionGroup<T extends string> {
 /**
  * How large the rendered control is drawn.
  *
- * `''` means "whatever the theme's default is" and is not the same as `'small'` — PrimeNG's own
- * input is `'small' | 'large' | undefined`, so the empty string is translated to `undefined` at
- * the binding rather than being passed through.
+ * `'medium'` is the theme's own normal size, and PrimeNG spells that `undefined` — its `size` input
+ * is `'small' | 'large' | undefined`, so each renderer translates the middle member at the binding
+ * rather than passing it through. It is named here anyway because a menu reading
+ * Small/Medium/Large says what the middle choice *is*, where the `''`/"Default" it replaced only
+ * said what it was not.
  */
-declare const FIELD_INPUT_SIZES: readonly ["", "small", "large"];
+declare const FIELD_INPUT_SIZES: readonly ["small", "medium", "large"];
 type FieldInputSize = (typeof FIELD_INPUT_SIZES)[number];
 declare const FIELD_INPUT_SIZE_OPTIONS: ConfigSelectOption<FieldInputSize>[];
+/**
+ * The sizes a *saved* config may hold — the three above plus the `''` they used to include.
+ *
+ * Parsing has to be wider than authoring here. Every field authored before Medium existed stored
+ * `''` for "the theme's normal size", and that is now spelled `'medium'`: reading those against
+ * {@link FIELD_INPUT_SIZES} alone would reject the value and fall back to the default, which is
+ * now `'small'` — quietly shrinking every such field the next time its config was read.
+ */
+declare const STORED_FIELD_INPUT_SIZES: readonly ["", "small", "medium", "large"];
+type StoredFieldInputSize = (typeof STORED_FIELD_INPUT_SIZES)[number];
+/**
+ * A saved size in the authored vocabulary — `''` read as the `'medium'` it always meant.
+ *
+ * Applied at parse time rather than by rewriting saved configs, so a field keeps drawing at the
+ * size it has always drawn at without anything having to migrate it. Its config is rewritten in
+ * full the first time someone saves the field, at which point the `''` goes away on its own.
+ */
+declare function normalizeFieldInputSize(size: StoredFieldInputSize): FieldInputSize;
 /**
  * One choice a field offers — a radio button, or a box in a checkbox group.
  *
@@ -586,11 +606,12 @@ declare const MEDIA_FILE_EXTENSION_OPTIONS: ConfigSelectOptionGroup<MediaFileExt
  * How large the placeholder is drawn.
  *
  * Deliberately **not** `FIELD_INPUT_SIZES` from `field-definition-type-common.model.ts`, which the
- * six other configs share. That one is `'' | 'small' | 'large'` because it is handed straight to a
- * PrimeNG control's `size` input, and its empty member means "whatever the theme's default is".
- * A `Media` field draws an icon rather than a PrimeNG control, so there is no control default to
- * defer to — every value here names a size, and the middle one is a real choice rather than an
- * absent one.
+ * six other configs share — even though the two now spell the same three values. That one is
+ * handed to a PrimeNG control's `size` input, whose vocabulary is `'small' | 'large' | undefined`,
+ * so its `'medium'` is translated away at the binding and exists to give the theme's own size a
+ * name. A `Media` field draws an icon rather than a PrimeNG control: every value here is applied
+ * as a CSS class of its own, and `'medium'` is a size this file defines rather than one it defers
+ * on. Sharing the constant would tie a glyph scale to whatever PrimeNG's control scale does next.
  */
 declare const MEDIA_PREVIEW_SIZES: readonly ["small", "medium", "large"];
 type MediaPreviewSize = (typeof MEDIA_PREVIEW_SIZES)[number];
@@ -1357,7 +1378,7 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
      * browser decide, and for a password field naming an input mode would be second-guessing it.
      */
     readonly inputMode: _angular_core.Signal<string | null>;
-    /** `''` means "theme default", which PrimeNG spells as `undefined`. */
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     /** `p-inputmask` emits null for a cleared control; the wire value for text is `''`. */
     onValueChange(next: string | null): void;
@@ -1370,6 +1391,30 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
     private affix;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<TextFieldInputComponent, never>;
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<TextFieldInputComponent, "vcr-text-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
+}
+
+/**
+ * Draws a multi-line text field, for the `TextArea` type.
+ *
+ * `rows`, `placeholder` and `maxlength` are native attributes — `pTextarea` is a directive, and
+ * only `autoResize` and `pSize` are Angular inputs on it. That means a misspelling among the
+ * former is not caught by `strictTemplates`.
+ */
+declare class TextareaFieldInputComponent implements FieldRenderer<TextareaFieldConfig, string> {
+    readonly config: _angular_core.InputSignal<TextareaFieldConfig>;
+    readonly value: _angular_core.ModelSignal<string>;
+    readonly fieldKey: _angular_core.InputSignal<string>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    /** Fires once the user leaves the control. The textarea codec is identity, so `value` is already
+        settled by the time this emits — there is no rounding or repainting to wait for here. */
+    readonly blurred: _angular_core.OutputEmitterRef<void>;
+    readonly inputId: _angular_core.Signal<string>;
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<TextareaFieldInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<TextareaFieldInputComponent, "vcr-textarea-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
 }
 
 /**
@@ -1422,6 +1467,7 @@ declare class NumberFieldInputComponent implements FieldRenderer<NumberFieldConf
     readonly maxFractionDigits: _angular_core.Signal<number | undefined>;
     /** `''` means "follow the browser", which `p-inputnumber` spells as `undefined`. */
     readonly locale: _angular_core.Signal<string | undefined>;
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     /** Zero is not negative, and neither is an empty control — `-0 < 0` is false, which is the
         answer wanted here. */
@@ -1518,6 +1564,7 @@ declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxField
     readonly isGroup: _angular_core.Signal<boolean>;
     /** The control's `id` in single mode, and the stem of each box's id in group mode. */
     readonly inputId: _angular_core.Signal<string>;
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     /** The boxes in the order `sortChoices` asks for, in group mode. Only the drawing order changes:
         a stored selection is a set of values and does not depend on it. */
@@ -1581,6 +1628,7 @@ declare class RadioFieldInputComponent implements FieldRenderer<RadioFieldConfig
     /** The choices in the order `sortChoices` asks for. Computed rather than sorted in the template,
         so the array identity only changes when the config does. */
     readonly options: _angular_core.Signal<readonly velocity_core_renderer.FieldChoiceOption[]>;
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     readonly canClear: _angular_core.Signal<boolean>;
     optionId(value: string): string;
@@ -1625,6 +1673,7 @@ declare class SelectFieldInputComponent implements FieldRenderer<SelectFieldConf
      */
     readonly options: _angular_core.Signal<FieldChoiceOption[]>;
     readonly isMultiple: _angular_core.Signal<boolean>;
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     /** `''` means "leave PrimeNG's own default", which an empty string would instead overwrite with
         a blank. Same translation `primeSize` makes. */
@@ -1750,11 +1799,11 @@ declare class DateFieldInputComponent implements FieldRenderer<DateFieldConfig, 
 /**
  * Which renderer draws which `fieldType`.
  *
- * Six of the nine kinds, across sixteen wire types. Still absent, and each for its own reason:
- * `textarea` and `currency` have not been extracted from the admin app yet, and `media` draws a
- * placeholder that edits nothing, so it is worth nothing to a consumer until the media picker
- * itself moves. An unregistered type is not an error: {@link FieldInputComponent} falls back to a
- * plain textarea, exactly as it does in the admin today.
+ * Seven of the nine kinds, across seventeen wire types. Still absent: `currency` has not been
+ * extracted from the admin app yet, and `media` draws a placeholder that edits nothing, so it is
+ * worth nothing to a consumer until the media picker itself moves. An unregistered type is not an
+ * error: {@link FieldInputComponent} falls back to a plain textarea, exactly as it does in the
+ * admin today.
  *
  * Note what is absent compared with the admin's copy: `editor`. Config editors are authoring UI
  * and stay in that app — see the note in `field-renderer-contract.ts`.
@@ -1789,6 +1838,7 @@ declare function isFieldRendererRegistered(fieldType: string): boolean;
  * calling one of these with different seed config, with no new component and no package release.
  */
 declare function textFieldRenderer(overrides?: Partial<TextFieldConfig>): ErasedFieldRendererDescriptor;
+declare function textareaFieldRenderer(overrides?: Partial<TextareaFieldConfig>): ErasedFieldRendererDescriptor;
 declare function numberFieldRenderer(overrides?: Partial<NumberFieldConfig>): ErasedFieldRendererDescriptor;
 declare function checkboxFieldRenderer(overrides?: Partial<CheckboxFieldConfig>): ErasedFieldRendererDescriptor;
 declare function radioFieldRenderer(overrides?: Partial<RadioFieldConfig>): ErasedFieldRendererDescriptor;
@@ -1895,5 +1945,5 @@ declare class FieldInputComponent {
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
 }
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, toFieldConfigJson };
-export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, SelectFieldConfig, SelectFieldValue, SelectMode, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textareaFieldRenderer, toFieldConfigJson };
+export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };

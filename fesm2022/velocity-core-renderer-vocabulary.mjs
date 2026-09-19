@@ -46,8 +46,12 @@ const FieldDefinitionTypes = {
     DataTablePageHeader: 'DataTablePageHeader',
     CustomObjectDataPoint: 'CustomObjectDataPoint',
     EsriMap: 'EsriMap',
+    EsriMapV3: 'EsriMapV3',
     GoogleMap: 'GoogleMap',
     AddPropertyDialog: 'AddPropertyDialog',
+    Notes: 'Notes',
+    SitePlan: 'SitePlan',
+    Gallery: 'Gallery',
     Date: 'Date',
     DateTime: 'DateTime',
     Select: 'Select',
@@ -76,8 +80,9 @@ const FieldDefinitionTypes = {
  * {@link RETIRED_FIELD_TYPE_LABELS} instead.
  *
  * Thirteen of these have a typed renderer: {@link FieldValueType}. The rest are
- * {@link PageWidgetType} — each configured by its own dedicated component in the admin and drawn
- * by its own branch in the client, with nothing in this package touching them.
+ * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
+ * touching them, and configured in the admin by a dedicated component each except `Notes`,
+ * `SitePlan` and `Gallery`, which have nothing to configure yet.
  *
  * Order is the menu order, authored in groups — the primitives first, then the page-level widgets.
  * The admin sorts a copy alphabetically for display; do not re-sort in place.
@@ -103,8 +108,12 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Data Table Page Header', value: 'DataTablePageHeader' },
     { label: 'Custom Object Data Point', value: 'CustomObjectDataPoint' },
     { label: 'Esri Map', value: 'EsriMap' },
+    { label: 'Esri Map V3', value: 'EsriMapV3' },
     { label: 'Google Map', value: 'GoogleMap' },
     { label: 'Add Property Dialog', value: 'AddPropertyDialog' },
+    { label: 'Notes', value: 'Notes' },
+    { label: 'Site Plan', value: 'SitePlan' },
+    { label: 'Gallery', value: 'Gallery' },
 ];
 /**
  * Menu labels for the types no longer offered above — see {@link RetiredFieldDefinitionType} for
