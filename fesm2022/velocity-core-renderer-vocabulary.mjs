@@ -52,6 +52,9 @@ const FieldDefinitionTypes = {
     Notes: 'Notes',
     SitePlan: 'SitePlan',
     Gallery: 'Gallery',
+    Documents: 'Documents',
+    Tasks: 'Tasks',
+    Contacts: 'Contacts',
     Date: 'Date',
     DateTime: 'DateTime',
     Select: 'Select',
@@ -82,7 +85,7 @@ const FieldDefinitionTypes = {
  * Thirteen of these have a typed renderer: {@link FieldValueType}. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
  * touching them, and configured in the admin by a dedicated component each except `Notes`,
- * `SitePlan` and `Gallery`, which have nothing to configure yet.
+ * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.
  *
  * Order is the menu order, authored in groups — the primitives first, then the page-level widgets.
  * The admin sorts a copy alphabetically for display; do not re-sort in place.
@@ -114,6 +117,9 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Notes', value: 'Notes' },
     { label: 'Site Plan', value: 'SitePlan' },
     { label: 'Gallery', value: 'Gallery' },
+    { label: 'Documents', value: 'Documents' },
+    { label: 'Tasks', value: 'Tasks' },
+    { label: 'Contacts', value: 'Contacts' },
 ];
 /**
  * Menu labels for the types no longer offered above — see {@link RetiredFieldDefinitionType} for

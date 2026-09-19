@@ -33,13 +33,14 @@ type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 
  * one. They are listed here anyway because the admin authors them, so their spellings are shared
  * contract even though their components are not.
  *
- * `Notes`, `SitePlan` and `Gallery` go one step further than their neighbours: they have no config
- * component either, in this package or in the admin. Placing one on a page is the whole of its
- * authoring, so the admin's Config tab says so in a line of text where the other seven show a
- * picker. They are offered now so pages can be composed ahead of the widgets being built, and each
- * grows a config the day it has a setting worth authoring.
+ * `Notes`, `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts` go one step further than
+ * their neighbours: they have no config component either, in this package or in the admin.
+ * Placing one on a page is the whole of its authoring, so the admin's Config tab says so in a
+ * line of text where the other seven show a picker. They are offered now so pages can be
+ * composed ahead of the widgets being built, and each grows a config the day it has a setting
+ * worth authoring.
  */
-type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'CustomObjectDataPoint' | 'EsriMap' | 'EsriMapV3' | 'GoogleMap' | 'AddPropertyDialog' | 'Notes' | 'SitePlan' | 'Gallery';
+type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'CustomObjectDataPoint' | 'EsriMap' | 'EsriMapV3' | 'GoogleMap' | 'AddPropertyDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'Tasks' | 'Contacts';
 /**
  * Types no longer offered in the admin's menu, but still held by fields saved before they were
  * withdrawn.
@@ -96,6 +97,9 @@ declare const FieldDefinitionTypes: {
     readonly Notes: "Notes";
     readonly SitePlan: "SitePlan";
     readonly Gallery: "Gallery";
+    readonly Documents: "Documents";
+    readonly Tasks: "Tasks";
+    readonly Contacts: "Contacts";
     readonly Date: "Date";
     readonly DateTime: "DateTime";
     readonly Select: "Select";
@@ -126,7 +130,7 @@ declare const FieldDefinitionTypes: {
  * Thirteen of these have a typed renderer: {@link FieldValueType}. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
  * touching them, and configured in the admin by a dedicated component each except `Notes`,
- * `SitePlan` and `Gallery`, which have nothing to configure yet.
+ * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.
  *
  * Order is the menu order, authored in groups — the primitives first, then the page-level widgets.
  * The admin sorts a copy alphabetically for display; do not re-sort in place.

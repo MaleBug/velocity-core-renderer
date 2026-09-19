@@ -1,6 +1,6 @@
 {
   "name": "velocity-core-renderer",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Field-definition-type renderers for the Velocity Core platform.",
   "license": "UNLICENSED",
   "homepage": "https://github.com/MaleBug/velocity-core-renderer",
