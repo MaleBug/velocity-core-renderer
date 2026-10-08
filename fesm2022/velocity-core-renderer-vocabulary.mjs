@@ -44,11 +44,19 @@ const FieldDefinitionTypes = {
     DataList: 'DataList',
     DataTableFilter: 'DataTableFilter',
     DataTablePageHeader: 'DataTablePageHeader',
+    Metric: 'Metric',
     CustomObjectDataPoint: 'CustomObjectDataPoint',
-    EsriMap: 'EsriMap',
     EsriMapV3: 'EsriMapV3',
     GoogleMap: 'GoogleMap',
+    MiniMap: 'MiniMap',
+    SiteSelectionList: 'SiteSelectionList',
+    SiteSelectionDetails: 'SiteSelectionDetails',
+    MarketResearchList: 'MarketResearchList',
+    MarketResearchDetails: 'MarketResearchDetails',
     AddPropertyDialog: 'AddPropertyDialog',
+    AddLeaseDialog: 'AddLeaseDialog',
+    AddSimpleRecordDialog: 'AddSimpleRecordDialog',
+    AddLeaseRecordDialog: 'AddLeaseRecordDialog',
     Notes: 'Notes',
     SitePlan: 'SitePlan',
     Gallery: 'Gallery',
@@ -79,10 +87,10 @@ const FieldDefinitionTypes = {
  * backend published them, and like every other value here they are accepted or rejected at save
  * time rather than validated here.
  *
- * The six retired values are deliberately absent, and are named in
+ * The seven retired values are deliberately absent, and are named in
  * {@link RETIRED_FIELD_TYPE_LABELS} instead.
  *
- * Thirteen of these have a typed renderer: {@link FieldValueType}. The rest are
+ * Twelve of these have a typed renderer: {@link FieldValueType}. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
  * touching them, and configured in the admin by a dedicated component each except `Notes`,
  * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.
@@ -98,7 +106,6 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Currency', value: 'Currency' },
     { label: 'Checkbox', value: 'Checkbox' },
     { label: 'Date Picker', value: 'DatePicker' },
-    { label: 'Email', value: 'Email' },
     { label: 'Phone', value: 'Phone' },
     { label: 'URL', value: 'Url' },
     { label: 'Radio Button', value: 'RadioButton' },
@@ -109,11 +116,19 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Data List', value: 'DataList' },
     { label: 'Data Table Filter', value: 'DataTableFilter' },
     { label: 'Data Table Page Header', value: 'DataTablePageHeader' },
+    { label: 'Metric', value: 'Metric' },
     { label: 'Custom Object Data Point', value: 'CustomObjectDataPoint' },
-    { label: 'Esri Map', value: 'EsriMap' },
     { label: 'Esri Map V3', value: 'EsriMapV3' },
     { label: 'Google Map', value: 'GoogleMap' },
+    { label: 'Mini Map', value: 'MiniMap' },
+    { label: 'Site Selection List', value: 'SiteSelectionList' },
+    { label: 'Site Selection Details', value: 'SiteSelectionDetails' },
+    { label: 'Market Research List', value: 'MarketResearchList' },
+    { label: 'Market Research Details', value: 'MarketResearchDetails' },
     { label: 'Add Property Dialog', value: 'AddPropertyDialog' },
+    { label: 'Add Lease Dialog', value: 'AddLeaseDialog' },
+    { label: 'Add Simple Record Dialog', value: 'AddSimpleRecordDialog' },
+    { label: 'Add Lease Record Dialog', value: 'AddLeaseRecordDialog' },
     { label: 'Notes', value: 'Notes' },
     { label: 'Site Plan', value: 'SitePlan' },
     { label: 'Gallery', value: 'Gallery' },
@@ -139,6 +154,7 @@ const RETIRED_FIELD_TYPE_LABELS = {
     MultiSelect: 'Multi-Select (retired — use Checkbox)',
     Boolean: 'Boolean (retired — use Checkbox)',
     CheckboxGroup: 'Checkbox Group (retired — use Checkbox)',
+    Email: 'Email (retired — use Text)',
 };
 /**
  * The retired-menu label for `fieldType`, or null if it is not a retired type.
@@ -156,6 +172,52 @@ function retiredFieldTypeLabel(fieldType) {
 }
 /** What a new field opens on — the one type the contract actually documents. */
 const DEFAULT_FIELD_TYPE = FieldDefinitionTypes.Text;
+/**
+ * The wire types this package can actually draw a control for.
+ *
+ * A duplicate of `FIELD_DEFINITION_TYPE_RENDERERS`' keys, and deliberately so. That registry holds
+ * component classes, so reading its keys drags every renderer and its PrimeNG imports into
+ * whatever bundle asks the question — and the question "can the client draw this type?" is one the
+ * *admin* needs, to offer an author only overrides the client can honour. Answering it from the
+ * registry would put a second copy of every renderer in the admin's chunk beside the copies it
+ * already has.
+ *
+ * So the list lives here, where there is no Angular at all, and
+ * `package-rendered-field-types.spec.ts` asserts it matches the registry exactly. Adding a
+ * renderer without adding it here is a failing test, not a silent drift — which is the only reason
+ * a hand-kept duplicate is acceptable.
+ *
+ * Includes the retired types, because the registry does: a field saved under one still draws. A
+ * caller offering a *menu* wants this intersected with {@link FIELD_TYPE_OPTIONS}, which carries
+ * only the types still on offer.
+ */
+const PACKAGE_RENDERED_FIELD_TYPES = [
+    'Text',
+    'Phone',
+    'Url',
+    'Number',
+    'Decimal',
+    'Currency',
+    'TextArea',
+    'Checkbox',
+    'DatePicker',
+    'RadioButton',
+    'Dropdown',
+    // Retired, registered so an existing field of one keeps its renderer. See
+    // `RETIRED_FIELD_TYPE_LABELS`.
+    'Date',
+    'DateTime',
+    'Select',
+    'Boolean',
+    'MultiSelect',
+    'CheckboxGroup',
+    'Email',
+];
+/** Whether this package can draw a control for `fieldType`. Takes a plain `string` for the same
+    reason {@link retiredFieldTypeLabel} does — every caller has one off the wire. */
+function isPackageRenderedFieldType(fieldType) {
+    return PACKAGE_RENDERED_FIELD_TYPES.includes(fieldType);
+}
 
 /*
  * Public API Surface of velocity-core-renderer/vocabulary
@@ -172,5 +234,5 @@ const DEFAULT_FIELD_TYPE = FieldDefinitionTypes.Text;
  * Generated bundle index. Do not edit.
  */
 
-export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, RETIRED_FIELD_TYPE_LABELS, retiredFieldTypeLabel };
+export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageRenderedFieldType, retiredFieldTypeLabel };
 //# sourceMappingURL=velocity-core-renderer-vocabulary.mjs.map

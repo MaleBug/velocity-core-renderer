@@ -1,11 +1,12 @@
 # velocity-core-renderer
 
-Field-definition-type renderers for the Velocity Core platform. One field type, one control, one
-canonical vocabulary — shared by `velocity-core-ui-admin` and `velocity-core-ui` so the two cannot
-drift apart.
+Shared UI for the Velocity Core platform — field-definition-type renderers and the chrome a list
+screen is built from. One field type, one control, one canonical vocabulary, shared by
+`velocity-core-ui-admin` and `velocity-core-ui` so the two cannot drift apart.
 
-The package has **no dependency injection**: no services, no HTTP, no store, no router. Everything
-arrives through signal inputs, which is what makes it safe to render the same field in two apps.
+The package takes **no HTTP, no store and no router**, and the renderers take no dependency
+injection at all: everything arrives through signal inputs, which is what makes it safe to render
+the same field in two apps. The one exception is `/ui`, which carries a service — see below.
 
 > **This repository is generated.** Every file here is build output from
 > `Bermwood/velocity-core-ui-admin`, under `projects/velocity-core-renderer/`. Pull requests
@@ -14,12 +15,12 @@ arrives through signal inputs, which is what makes it safe to render the same fi
 ## Install
 
 ```bash
-npm install git+https://github.com/MaleBug/velocity-core-renderer.git#v0.2.0
+npm install git+https://github.com/MaleBug/velocity-core-renderer.git#v0.6.0
 ```
 
 ```json
 "dependencies": {
-  "velocity-core-renderer": "git+https://github.com/MaleBug/velocity-core-renderer.git#v0.2.0"
+  "velocity-core-renderer": "git+https://github.com/MaleBug/velocity-core-renderer.git#v0.6.0"
 }
 ```
 
@@ -45,7 +46,7 @@ inputs render unstyled.
 
 ## Entry points
 
-There are two, and the split is load-bearing rather than cosmetic.
+There are three, and the split is load-bearing rather than cosmetic.
 
 ```ts
 // Everything: the renderers, the registry, the facade, the config codecs — and the vocabulary.
@@ -53,12 +54,20 @@ import { FieldInputComponent, findFieldRenderer } from 'velocity-core-renderer';
 
 // The field-type names alone. No Angular, no PrimeNG, no components.
 import { FieldDefinitionTypes, FIELD_TYPE_OPTIONS } from 'velocity-core-renderer/vocabulary';
+
+// List-screen chrome: the page header, and the toast service behind it.
+import { VcrPageHeaderComponent, VcrToastService } from 'velocity-core-renderer/ui';
 ```
 
 **Import from `/vocabulary` in any file that lands in the initial bundle** — layout, routing,
 section stubs. Behind a single entry point the string table drags the renderer components and their
 PrimeNG imports along with it: measured at about **130 kB of initial bundle** in `velocity-core-ui`,
 enough to break its size budget. Only the screens that actually draw a field should import the root.
+
+**`/ui` carries PrimeNG, so reach it only from a lazy route** — same constraint, same reason. Watch
+`VcrToastService` in particular: it is `providedIn: 'root'`, so injecting it from eager code pulls
+this entry point into the initial chunk. Inject it from the same lazy screens that use the
+components.
 
 ## Usage
 
@@ -145,6 +154,10 @@ reads three CSS custom properties, which a consuming app must define:
 ```
 
 All three are already defined in both Velocity apps.
+
+`/ui` components read host tokens too — `--content-color`, `--surface-500`, `--border-radius-sm` —
+but every one of them falls back to its PrimeNG equivalent, so they render correctly in an app that
+defines none of them. Keep that shape for any token added there.
 
 ## Extending the registry
 

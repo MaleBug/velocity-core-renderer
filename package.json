@@ -1,7 +1,7 @@
 {
   "name": "velocity-core-renderer",
-  "version": "0.4.0",
-  "description": "Field-definition-type renderers for the Velocity Core platform.",
+  "version": "0.7.0",
+  "description": "Shared field-definition-type renderers and list-screen UI for the Velocity Core platform.",
   "license": "UNLICENSED",
   "homepage": "https://github.com/MaleBug/velocity-core-renderer",
   "repository": {
@@ -29,6 +29,10 @@
     ".": {
       "types": "./types/velocity-core-renderer.d.ts",
       "default": "./fesm2022/velocity-core-renderer.mjs"
+    },
+    "./ui": {
+      "types": "./types/velocity-core-renderer-ui.d.ts",
+      "default": "./fesm2022/velocity-core-renderer-ui.mjs"
     },
     "./vocabulary": {
       "types": "./types/velocity-core-renderer-vocabulary.d.ts",

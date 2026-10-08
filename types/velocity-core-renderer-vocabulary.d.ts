@@ -21,10 +21,10 @@
 /**
  * The types that hold a value and have a typed renderer.
  *
- * `Text`/`Email`/`Phone`/`Url` share the text renderer, `Number`/`Decimal` the number one — the
+ * `Text`/`Phone`/`Url` share the text renderer, `Number`/`Decimal` the number one — the
  * split lives in the registry, not here.
  */
-type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 'Checkbox' | 'DatePicker' | 'Email' | 'Phone' | 'Url' | 'RadioButton' | 'Dropdown' | 'Media';
+type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 'Checkbox' | 'DatePicker' | 'Phone' | 'Url' | 'RadioButton' | 'Dropdown' | 'Media';
 /**
  * The types that place a page-level widget rather than a field value.
  *
@@ -36,11 +36,11 @@ type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 
  * `Notes`, `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts` go one step further than
  * their neighbours: they have no config component either, in this package or in the admin.
  * Placing one on a page is the whole of its authoring, so the admin's Config tab says so in a
- * line of text where the other seven show a picker. They are offered now so pages can be
+ * line of text where the others show a picker. They are offered now so pages can be
  * composed ahead of the widgets being built, and each grows a config the day it has a setting
  * worth authoring.
  */
-type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'CustomObjectDataPoint' | 'EsriMap' | 'EsriMapV3' | 'GoogleMap' | 'AddPropertyDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'Tasks' | 'Contacts';
+type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'CustomObjectDataPoint' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'Tasks' | 'Contacts';
 /**
  * Types no longer offered in the admin's menu, but still held by fields saved before they were
  * withdrawn.
@@ -55,12 +55,15 @@ type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilte
  *   renderer so fields already saved as `Select` keep drawing what they have always drawn.
  * - `Boolean` and `MultiSelect` (and the short-lived `CheckboxGroup`) -> `Checkbox`, whose config
  *   carries a `checkboxType` deciding whether it draws one box or a group of them.
+ * - `Email` -> `Text`, which draws the same plain text box minus the email keyboard hint and
+ *   browser validation `inputType: 'email'` gave it — not offered as a `Text` Input Type option
+ *   either, since it was never meant as a setting to pick, only a fact about the retired type.
  *
  * **All of them stay registered** even though none is offered: a field's type cannot be changed
  * once saved, so dropping them would strip the editor from every such field already in an account
  * and leave it editing raw JSON.
  */
-type RetiredFieldDefinitionType = 'Date' | 'DateTime' | 'Select' | 'MultiSelect' | 'Boolean' | 'CheckboxGroup';
+type RetiredFieldDefinitionType = 'Date' | 'DateTime' | 'Select' | 'MultiSelect' | 'Boolean' | 'CheckboxGroup' | 'Email';
 /** Every `fieldType` the admin can write — offered or retired, value or widget. */
 type FieldDefinitionType = FieldValueType | PageWidgetType | RetiredFieldDefinitionType;
 /**
@@ -89,11 +92,19 @@ declare const FieldDefinitionTypes: {
     readonly DataList: "DataList";
     readonly DataTableFilter: "DataTableFilter";
     readonly DataTablePageHeader: "DataTablePageHeader";
+    readonly Metric: "Metric";
     readonly CustomObjectDataPoint: "CustomObjectDataPoint";
-    readonly EsriMap: "EsriMap";
     readonly EsriMapV3: "EsriMapV3";
     readonly GoogleMap: "GoogleMap";
+    readonly MiniMap: "MiniMap";
+    readonly SiteSelectionList: "SiteSelectionList";
+    readonly SiteSelectionDetails: "SiteSelectionDetails";
+    readonly MarketResearchList: "MarketResearchList";
+    readonly MarketResearchDetails: "MarketResearchDetails";
     readonly AddPropertyDialog: "AddPropertyDialog";
+    readonly AddLeaseDialog: "AddLeaseDialog";
+    readonly AddSimpleRecordDialog: "AddSimpleRecordDialog";
+    readonly AddLeaseRecordDialog: "AddLeaseRecordDialog";
     readonly Notes: "Notes";
     readonly SitePlan: "SitePlan";
     readonly Gallery: "Gallery";
@@ -124,10 +135,10 @@ declare const FieldDefinitionTypes: {
  * backend published them, and like every other value here they are accepted or rejected at save
  * time rather than validated here.
  *
- * The six retired values are deliberately absent, and are named in
+ * The seven retired values are deliberately absent, and are named in
  * {@link RETIRED_FIELD_TYPE_LABELS} instead.
  *
- * Thirteen of these have a typed renderer: {@link FieldValueType}. The rest are
+ * Twelve of these have a typed renderer: {@link FieldValueType}. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
  * touching them, and configured in the admin by a dedicated component each except `Notes`,
  * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.
@@ -163,6 +174,29 @@ declare const RETIRED_FIELD_TYPE_LABELS: Record<RetiredFieldDefinitionType, stri
 declare function retiredFieldTypeLabel(fieldType: string): string | null;
 /** What a new field opens on — the one type the contract actually documents. */
 declare const DEFAULT_FIELD_TYPE: FieldDefinitionType;
+/**
+ * The wire types this package can actually draw a control for.
+ *
+ * A duplicate of `FIELD_DEFINITION_TYPE_RENDERERS`' keys, and deliberately so. That registry holds
+ * component classes, so reading its keys drags every renderer and its PrimeNG imports into
+ * whatever bundle asks the question — and the question "can the client draw this type?" is one the
+ * *admin* needs, to offer an author only overrides the client can honour. Answering it from the
+ * registry would put a second copy of every renderer in the admin's chunk beside the copies it
+ * already has.
+ *
+ * So the list lives here, where there is no Angular at all, and
+ * `package-rendered-field-types.spec.ts` asserts it matches the registry exactly. Adding a
+ * renderer without adding it here is a failing test, not a silent drift — which is the only reason
+ * a hand-kept duplicate is acceptable.
+ *
+ * Includes the retired types, because the registry does: a field saved under one still draws. A
+ * caller offering a *menu* wants this intersected with {@link FIELD_TYPE_OPTIONS}, which carries
+ * only the types still on offer.
+ */
+declare const PACKAGE_RENDERED_FIELD_TYPES: readonly FieldDefinitionType[];
+/** Whether this package can draw a control for `fieldType`. Takes a plain `string` for the same
+    reason {@link retiredFieldTypeLabel} does — every caller has one off the wire. */
+declare function isPackageRenderedFieldType(fieldType: string): boolean;
 
-export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, RETIRED_FIELD_TYPE_LABELS, retiredFieldTypeLabel };
+export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageRenderedFieldType, retiredFieldTypeLabel };
 export type { FieldDefinitionType, FieldValueType, PageWidgetType, RetiredFieldDefinitionType };

@@ -1,3 +1,4 @@
+import { DEFAULT_FIELD_TYPE } from 'velocity-core-renderer/vocabulary';
 export * from 'velocity-core-renderer/vocabulary';
 import * as i0 from '@angular/core';
 import { input, model, output, computed, ChangeDetectionStrategy, Component, signal, viewChild, effect, untracked, reflectComponentType, ViewContainerRef, inputBinding, outputBinding } from '@angular/core';
@@ -37,6 +38,10 @@ import { DatePicker } from 'primeng/datepicker';
  * below it uses `TConfig`.
  */
 function eraseFieldRenderer(descriptor) {
+    // Read into a local so the closure below closes over the function itself rather than over
+    // `descriptor`, which is what lets the undefined case be decided once here instead of on every
+    // call — and what keeps the wrapper free of a non-null assertion.
+    const format = descriptor.format;
     return {
         kind: descriptor.kind,
         renderer: descriptor.renderer,
@@ -45,6 +50,7 @@ function eraseFieldRenderer(descriptor) {
         parse: (json) => descriptor.parse(json),
         serialize: (value, config) => descriptor.serialize(value, config),
         deserialize: (raw, config) => descriptor.deserialize(raw, config),
+        format: format === undefined ? undefined : (raw, config) => format(raw, config),
     };
 }
 /**
@@ -477,6 +483,73 @@ function formatTokens(format) {
     return format.replace(/'[^']*'/g, '');
 }
 /**
+ * A date written out under a PrimeNG `dateFormat` — `2026-09-11` as `09/11/2026`.
+ *
+ * The read-side counterpart to {@link formatLocalDate}: that writes the wire form, this writes the
+ * form a person reads, which is what a field value's `valueFormatted` carries beside its `value`.
+ * `p-datepicker` does this internally for its own input and exposes no way to ask it, so the
+ * tokens are walked here.
+ *
+ * Covers the tokens the five entries of `DATE_FORMAT_OPTIONS` use, plus the two-digit `y` and
+ * short `M` for a config saved before that list was closed. An unrecognised character is copied
+ * through, and `'...'` quotes a literal, both matching PrimeNG's own reading — so a format this
+ * does not fully understand degrades to something close rather than to nothing.
+ *
+ * Never throws and never returns an empty string for a real date, per the rules at the top of
+ * this file.
+ */
+function formatDateByPattern(date, format, options = {}) {
+    let out = '';
+    let index = 0;
+    while (index < format.length) {
+        const char = format[index];
+        // A quoted literal — `'on the'` — is copied verbatim, so a letter inside it is not a token.
+        if (char === "'") {
+            const end = format.indexOf("'", index + 1);
+            if (end === -1) {
+                out += format.slice(index + 1);
+                break;
+            }
+            out += format.slice(index + 1, end);
+            index = end + 1;
+            continue;
+        }
+        // Longest first, or `MM` would be read as two `M`s and `dd` as two `d`s.
+        const token = DATE_TOKENS.find((entry) => format.startsWith(entry.token, index));
+        if (token === undefined) {
+            out += char;
+            index += 1;
+            continue;
+        }
+        out += token.write(date);
+        index += token.token.length;
+    }
+    if (options.showTime !== true) {
+        return out;
+    }
+    const time = options.showSeconds === true
+        ? `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+        : `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return `${out} ${time}`;
+}
+/**
+ * The date tokens, longest first so the scan above can take the first match.
+ *
+ * `yy` is a *four*-digit year rather than a two-digit one, which is PrimeNG's own convention and
+ * the reading `DATE_FORMAT_OPTIONS` relies on — its `'yy'` entry is labelled "Year" and its
+ * `'mm/dd/yy'` entry "MM/DD/YYYY".
+ */
+const DATE_TOKENS = [
+    { token: 'dd', write: (date) => pad(date.getDate()) },
+    { token: 'mm', write: (date) => pad(date.getMonth() + 1) },
+    { token: 'MM', write: (date) => MONTH_NAMES[date.getMonth()] },
+    { token: 'yy', write: (date) => String(date.getFullYear()) },
+    { token: 'd', write: (date) => String(date.getDate()) },
+    { token: 'm', write: (date) => String(date.getMonth() + 1) },
+    { token: 'M', write: (date) => MONTH_NAMES[date.getMonth()].slice(0, 3) },
+    { token: 'y', write: (date) => pad(date.getFullYear() % 100) },
+];
+/**
  * Whether a PrimeNG date format names the day of the month.
  *
  * Lowercase `d` and `o` (day of year) are the only tokens that set a day — uppercase `D` is the
@@ -848,11 +921,33 @@ function parseNumberFieldConfig(json, defaults) {
 }
 
 /** How the currency is named alongside the amount. */
-const CURRENCY_DISPLAYS = ['symbol', 'code', 'name'];
+/**
+ * How the currency is named beside the amount — the four `Intl.NumberFormat` currency displays.
+ *
+ * `symbol` and `narrowSymbol` differ in what they optimise for, and the difference is larger
+ * than it sounds. `symbol` is the *unambiguous* form for the locale, so `CAD` reads `CA$` and
+ * `AUD` reads `A$` — a bare `$` in an English context means US dollars. Where CLDR has no
+ * convention for a currency in that locale it falls back to the ISO code, which is why `symbol`
+ * yields a distinct glyph for only about 21 of the 155 codes offered. `narrowSymbol` asks for
+ * the currency's own glyph instead and manages about 98 of them — `฿`, `zł`, `₦` — at the cost
+ * of rendering `CAD`, `AUD`, `SGD` and friends as a plain `$`.
+ *
+ * Neither is strictly better, which is why both are offered and `symbol` stays the default.
+ */
+const CURRENCY_DISPLAYS = ['symbol', 'narrowSymbol', 'code', 'name'];
+/**
+ * The three ways the currency can be named beside the amount.
+ *
+ * Labelled by the mode alone. These used to carry a worked example each — `Symbol ($)`,
+ * `Code (USD)`, `Name (US dollars)` — which read correctly only while the field was in dollars
+ * and quietly lied for every other code. The config editor appends a live example built from the
+ * chosen code and locale instead; see `CurrencyFieldConfigComponent.currencyDisplayOptions`.
+ */
 const CURRENCY_DISPLAY_OPTIONS = [
-    { label: 'Symbol ($)', value: 'symbol' },
-    { label: 'Code (USD)', value: 'code' },
-    { label: 'Name (US dollars)', value: 'name' },
+    { label: 'Symbol', value: 'symbol' },
+    { label: 'Symbol (short)', value: 'narrowSymbol' },
+    { label: 'Code', value: 'code' },
+    { label: 'Name', value: 'name' },
 ];
 const DEFAULT_CURRENCY_FIELD_CONFIG = {
     currency: 'USD',
@@ -1909,6 +2004,86 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
         }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }] } });
 
 /**
+ * Draws a currency amount, for the `Currency` type.
+ *
+ * The same `p-inputnumber` the number renderer uses, in `mode="currency"`. Separate because a
+ * currency field has three settings a plain number has no use for, and because the two are
+ * distinct `fieldType`s on the wire.
+ *
+ * The stored value is the amount alone — no symbol, no separators — so this config decides only
+ * how a number is *drawn*. See `CurrencyFieldConfig`.
+ */
+class CurrencyFieldInputComponent {
+    config = input.required(...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    value = model(null, ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    /** Fires once the user leaves the control. Unlike `number` there is no rounding step to wait
+        for — `p-inputnumber` applies this field's fraction digits as the value is typed. */
+    blurred = output();
+    inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    /**
+     * The currency code to format with, falling back to the default for one that is not
+     * three letters.
+     *
+     * `p-inputnumber` in currency mode hands the code straight to `Intl.NumberFormat`, which
+     * *throws* on a malformed one — and a thrown formatter takes the whole form down rather than
+     * degrading. A field misconfigured through the raw-JSON textarea must not be able to do that,
+     * so the fallback is here as well as the warning in the config editor.
+     */
+    currency = computed(() => {
+        const code = this.config().currency.trim();
+        return isCurrencyCodeShaped(code) ? code.toUpperCase() : DEFAULT_CURRENCY_FIELD_CONFIG.currency;
+    }, ...(ngDevMode ? [{ debugName: "currency" }] : /* istanbul ignore next */ []));
+    /**
+     * Why the amount is out of bounds, or `null` while it is not.
+     *
+     * `p-inputnumber` is not given `min`/`max` at all — see the template — for the same reason as
+     * `NumberFieldInputComponent.rangeError`: its own answer to an out-of-range amount is to
+     * silently rewrite it to the nearest bound on blur, which reads as data loss rather than a rule
+     * being enforced. This reports the same fact as a message instead, leaving the typed amount
+     * exactly as typed.
+     */
+    rangeError = computed(() => {
+        const value = this.value();
+        if (value === null) {
+            return null;
+        }
+        const { min, max } = this.config();
+        if (min !== null && max !== null && (value < min || value > max)) {
+            return `Enter an amount between ${min} and ${max}.`;
+        }
+        if (min !== null && value < min) {
+            return `Enter an amount of at least ${min}.`;
+        }
+        if (max !== null && value > max) {
+            return `Enter an amount of at most ${max}.`;
+        }
+        return null;
+    }, ...(ngDevMode ? [{ debugName: "rangeError" }] : /* istanbul ignore next */ []));
+    hasRangeError = computed(() => this.rangeError() !== null, ...(ngDevMode ? [{ debugName: "hasRangeError" }] : /* istanbul ignore next */ []));
+    minFractionDigits = computed(() => this.config().minFractionDigits ?? undefined, ...(ngDevMode ? [{ debugName: "minFractionDigits" }] : /* istanbul ignore next */ []));
+    maxFractionDigits = computed(() => this.config().maxFractionDigits ?? undefined, ...(ngDevMode ? [{ debugName: "maxFractionDigits" }] : /* istanbul ignore next */ []));
+    locale = computed(() => this.config().locale || undefined, ...(ngDevMode ? [{ debugName: "locale" }] : /* istanbul ignore next */ []));
+    /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
+    primeSize = computed(() => {
+        const size = this.config().size;
+        return size === 'medium' ? undefined : size;
+    }, ...(ngDevMode ? [{ debugName: "primeSize" }] : /* istanbul ignore next */ []));
+    onValueChange(next) {
+        this.value.set(next ?? null);
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: CurrencyFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: CurrencyFieldInputComponent, isStandalone: true, selector: "vcr-currency-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", blurred: "blurred" }, ngImport: i0, template: "<p-inputnumber\n  mode=\"currency\"\n  [inputId]=\"inputId()\"\n  [ngModel]=\"value()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onBlur)=\"blurred.emit()\"\n  [currency]=\"currency()\"\n  [currencyDisplay]=\"config().currencyDisplay\"\n  [locale]=\"locale()\"\n  [step]=\"config().step\"\n  [useGrouping]=\"config().useGrouping\"\n  [minFractionDigits]=\"minFractionDigits()\"\n  [maxFractionDigits]=\"maxFractionDigits()\"\n  [showButtons]=\"config().showButtons\"\n  [buttonLayout]=\"config().buttonLayout\"\n  [placeholder]=\"config().placeholder\"\n  [showClear]=\"config().showClear\"\n  [allowEmpty]=\"config().allowEmpty\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid() || hasRangeError()\"\n  [size]=\"primeSize()\"\n  [attr.aria-describedby]=\"hasRangeError() ? inputId() + '-range-error' : null\"\n/>\n\n@if (hasRangeError()) {\n  <!-- Reported instead of letting `p-inputnumber` silently clamp the amount to a bound \u2014 see\n       `rangeError`. -->\n  <small class=\"currency-field-input__error\" [id]=\"inputId() + '-range-error'\">\n    {{ rangeError() }}\n  </small>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;min-width:0}:host ::ng-deep .p-inputnumber,:host ::ng-deep input{width:100%}.currency-field-input__error{display:block;margin-top:.25rem;color:var(--error-color);font-size:12px}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: InputNumber, selector: "p-inputNumber, p-inputnumber, p-input-number", inputs: ["showButtons", "format", "buttonLayout", "inputId", "styleClass", "placeholder", "tabindex", "title", "ariaLabelledBy", "ariaDescribedBy", "ariaLabel", "ariaRequired", "autocomplete", "incrementButtonClass", "decrementButtonClass", "incrementButtonIcon", "decrementButtonIcon", "readonly", "allowEmpty", "locale", "localeMatcher", "mode", "currency", "currencyDisplay", "useGrouping", "minFractionDigits", "maxFractionDigits", "prefix", "suffix", "inputStyle", "inputStyleClass", "showClear", "autofocus"], outputs: ["onInput", "onFocus", "onBlur", "onKeyDown", "onClear"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: CurrencyFieldInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-currency-field-input', standalone: true, imports: [FormsModule, InputNumber], changeDetection: ChangeDetectionStrategy.OnPush, template: "<p-inputnumber\n  mode=\"currency\"\n  [inputId]=\"inputId()\"\n  [ngModel]=\"value()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onBlur)=\"blurred.emit()\"\n  [currency]=\"currency()\"\n  [currencyDisplay]=\"config().currencyDisplay\"\n  [locale]=\"locale()\"\n  [step]=\"config().step\"\n  [useGrouping]=\"config().useGrouping\"\n  [minFractionDigits]=\"minFractionDigits()\"\n  [maxFractionDigits]=\"maxFractionDigits()\"\n  [showButtons]=\"config().showButtons\"\n  [buttonLayout]=\"config().buttonLayout\"\n  [placeholder]=\"config().placeholder\"\n  [showClear]=\"config().showClear\"\n  [allowEmpty]=\"config().allowEmpty\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid() || hasRangeError()\"\n  [size]=\"primeSize()\"\n  [attr.aria-describedby]=\"hasRangeError() ? inputId() + '-range-error' : null\"\n/>\n\n@if (hasRangeError()) {\n  <!-- Reported instead of letting `p-inputnumber` silently clamp the amount to a bound \u2014 see\n       `rangeError`. -->\n  <small class=\"currency-field-input__error\" [id]=\"inputId() + '-range-error'\">\n    {{ rangeError() }}\n  </small>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;min-width:0}:host ::ng-deep .p-inputnumber,:host ::ng-deep input{width:100%}.currency-field-input__error{display:block;margin-top:.25rem;color:var(--error-color);font-size:12px}\n"] }]
+        }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], blurred: [{ type: i0.Output, args: ["blurred"] }] } });
+
+/**
  * Draws a group of radio buttons, for the `RadioButton` type.
  *
  * `[name]` is bound to the field key on every button so two radio groups on one page — a
@@ -2214,11 +2389,12 @@ const DATE_RANGE_SEPARATOR = '/';
 /**
  * Which renderer draws which `fieldType`.
  *
- * Seven of the nine kinds, across seventeen wire types. Still absent: `currency` has not been
- * extracted from the admin app yet, and `media` draws a placeholder that edits nothing, so it is
- * worth nothing to a consumer until the media picker itself moves. An unregistered type is not an
- * error: {@link FieldInputComponent} falls back to a plain textarea, exactly as it does in the
- * admin today.
+ * Eight of the nine kinds, across eighteen wire types. Still absent: `media`, which draws a
+ * placeholder that edits nothing, so it is worth nothing to a consumer until the media picker
+ * itself moves. An unregistered type is not an error: {@link FieldInputComponent} falls back to a
+ * plain textarea, exactly as it does in the admin today — but note that the fallback is a
+ * *textarea*, so a consumer resolving a control through `resolveFieldControl` gets a free-text box
+ * for an unregistered type rather than merely an unformatted reading of the value.
  *
  * Note what is absent compared with the admin's copy: `editor`. Config editors are authoring UI
  * and stay in that app — see the note in `field-renderer-contract.ts`.
@@ -2229,16 +2405,16 @@ const DATE_RANGE_SEPARATOR = '/';
  * package can draw one.
  *
  * Several types deliberately share one renderer, differing only in the config seeded below —
- * `Text`/`Email`/`Phone`/`Url`, `Number`/`Decimal`, and `DatePicker` with the two retired date
+ * `Text`/`Phone`/`Url`, `Number`/`Decimal`, and `DatePicker` with the two retired date
  * types at the end of the map. See `FieldRendererKind`.
  */
 const FIELD_DEFINITION_TYPE_RENDERERS = {
     Text: textFieldRenderer(),
-    Email: textFieldRenderer({ inputType: 'email', placeholder: 'name@example.com' }),
     Phone: textFieldRenderer({ inputType: 'tel' }),
     Url: textFieldRenderer({ inputType: 'url', placeholder: 'https://' }),
     Number: numberFieldRenderer({ maxFractionDigits: 0, step: 1 }),
     Decimal: numberFieldRenderer({ minFractionDigits: 2, maxFractionDigits: 2, step: 0.01 }),
+    Currency: currencyFieldRenderer(),
     TextArea: textareaFieldRenderer(),
     Checkbox: checkboxFieldRenderer(),
     DatePicker: dateFieldRenderer(),
@@ -2246,10 +2422,10 @@ const FIELD_DEFINITION_TYPE_RENDERERS = {
     Dropdown: selectFieldRenderer(),
     // Retired from the dropdown, kept readable here. Each was replaced by a type above that does
     // the same job — `Date`/`DateTime` by `DatePicker`, `Select` by `RadioButton`, `MultiSelect` by
-    // `CheckboxGroup`. These are not aliases for convenience: a saved field's type can never be
-    // changed (`fieldType` is disabled on edit), so without them every field already in an account
-    // of one of these types would fall through to the raw-JSON textarea for good. `DateTime` keeps
-    // its old seed so such a field still opens with time switched on.
+    // `CheckboxGroup`, `Email` by `Text`. These are not aliases for convenience: a saved field's
+    // type can never be changed (`fieldType` is disabled on edit), so without them every field
+    // already in an account of one of these types would fall through to the raw-JSON textarea for
+    // good. `DateTime` keeps its old seed so such a field still opens with time switched on.
     //
     // `Select` stays pointed at the radio renderer even now that `Dropdown` exists: repointing it
     // would change what every field already saved as a `Select` draws, which is the one thing
@@ -2260,6 +2436,7 @@ const FIELD_DEFINITION_TYPE_RENDERERS = {
     Boolean: checkboxFieldRenderer({ checkboxType: 'single' }),
     MultiSelect: checkboxFieldRenderer({ checkboxType: 'group' }),
     CheckboxGroup: checkboxFieldRenderer({ checkboxType: 'group' }),
+    Email: textFieldRenderer({ inputType: 'email', placeholder: 'name@example.com' }),
 };
 /**
  * The descriptor for `fieldType`, or null for a type with no renderer.
@@ -2278,6 +2455,26 @@ function findFieldRenderer(fieldType) {
 /** Whether `fieldType` has a typed renderer. */
 function isFieldRendererRegistered(fieldType) {
     return findFieldRenderer(fieldType) !== null;
+}
+/**
+ * A stored value as it should be *read* — the string to show where a control is not being drawn,
+ * and the `valueFormatted` to send beside `value` on a save.
+ *
+ * The one entry point for this: resolving a descriptor, parsing its config and reaching for an
+ * optional member is plumbing no consumer should repeat, and a consumer that got any step wrong
+ * would quietly show raw values instead.
+ *
+ * Answers with `raw` untouched whenever there is nothing to apply — an unregistered field type, or
+ * one of the descriptors that deliberately declares no `format` because what it stores is already
+ * what it shows. That fallback is the whole error strategy: this never throws and never blanks a
+ * value it cannot read, matching the rule the codecs are written to.
+ */
+function formatFieldValue(fieldType, raw, fieldConfig) {
+    const descriptor = findFieldRenderer(fieldType);
+    if (descriptor?.format === undefined) {
+        return raw;
+    }
+    return descriptor.format(raw, descriptor.parse(fieldConfig));
 }
 /**
  * One factory per kind.
@@ -2327,6 +2524,37 @@ function numberFieldRenderer(overrides = {}) {
         // rewritten. See `formatPlainNumber`.
         serialize: (value) => formatPlainNumber(value),
         deserialize: (raw) => parseFiniteNumber(raw),
+        // Those same display settings, applied for reading only. The stored value is untouched — this
+        // is what `valueFormatted` carries beside it.
+        format: (raw, config) => formatDecimal(raw, config.locale, {
+            useGrouping: config.useGrouping,
+            minFractionDigits: config.minFractionDigits,
+            maxFractionDigits: config.maxFractionDigits,
+            prefix: config.prefix,
+            suffix: config.suffix,
+        }),
+    });
+}
+function currencyFieldRenderer(overrides = {}) {
+    const defaultConfig = { ...DEFAULT_CURRENCY_FIELD_CONFIG, ...overrides };
+    return eraseFieldRenderer({
+        kind: 'currency',
+        renderer: CurrencyFieldInputComponent,
+        defaultConfig,
+        parse: (json) => parseCurrencyFieldConfig(json, defaultConfig),
+        // The amount only — the ISO code lives in the config, so the same stored `1234.5` renders as
+        // `$1,234.50` or `€1.234,50` when the config changes, and stays arithmetic-ready for the
+        // backend. Identical to the number codec on purpose.
+        serialize: (value) => formatPlainNumber(value),
+        deserialize: (raw) => parseFiniteNumber(raw),
+        // The rendered amount, ISO code and all — `$1,234.50` for the `1234.5` stored above.
+        format: (raw, config) => formatDecimal(raw, config.locale, {
+            useGrouping: config.useGrouping,
+            minFractionDigits: config.minFractionDigits,
+            maxFractionDigits: config.maxFractionDigits,
+            currency: config.currency,
+            currencyDisplay: config.currencyDisplay,
+        }),
     });
 }
 function checkboxFieldRenderer(overrides = {}) {
@@ -2368,6 +2596,12 @@ function checkboxFieldRenderer(overrides = {}) {
             }
             return parsed;
         },
+        // Only the group mode maps. A single box already *stores* `trueText`/`falseText` — see the
+        // serialize above — so its stored value is its display form and mapping again would be a
+        // no-op at best.
+        format: (raw, config) => config.checkboxType === 'group'
+            ? choiceLabels(raw, config.options, CHECKBOX_VALUE_SEPARATOR)
+            : raw,
     });
 }
 function radioFieldRenderer(overrides = {}) {
@@ -2385,6 +2619,7 @@ function radioFieldRenderer(overrides = {}) {
             const value = raw.trim();
             return config.options.some((option) => option.value === value) ? value : null;
         },
+        format: (raw, config) => choiceLabel(raw, config.options),
     });
 }
 function selectFieldRenderer(overrides = {}) {
@@ -2422,6 +2657,9 @@ function selectFieldRenderer(overrides = {}) {
             const value = raw.trim();
             return config.options.some((option) => option.value === value) ? value : null;
         },
+        format: (raw, config) => config.selectionMode === 'multiple'
+            ? choiceLabels(raw, config.options, SELECT_VALUE_SEPARATOR)
+            : choiceLabel(raw, config.options),
     });
 }
 function dateFieldRenderer(overrides = {}) {
@@ -2433,6 +2671,9 @@ function dateFieldRenderer(overrides = {}) {
         parse: (json) => parseDateFieldConfig(json, defaultConfig),
         serialize: (value, config) => serializeDateValue(value, config),
         deserialize: (raw, config) => deserializeDateValue(raw, config),
+        // The dates as the picker itself writes them — `09/11/2026` for the `2026-09-11` stored above.
+        // Every selection mode is covered, since each stores its dates in one string.
+        format: (raw, config) => formatDateValue(raw, config),
     });
 }
 /**
@@ -2468,6 +2709,105 @@ function serializeDateValue(value, config) {
     const single = Array.isArray(value) ? (value[0] ?? null) : value;
     return single instanceof Date ? format(single) : '';
 }
+/**
+ * A stored number as its config says to read it — grouping, fraction digits, affixes, ISO code.
+ *
+ * Answers with the raw string untouched for anything it cannot render: a value that is not a
+ * number, a fraction-digit pair the platform rejects (`min` above `max`), or an ISO code `Intl`
+ * does not know. Nothing here throws, per the rule the value codecs are written to — a stored
+ * value this package may not have written must never be able to break a cell.
+ */
+function formatDecimal(raw, locale, options) {
+    const value = parseFiniteNumber(raw);
+    if (value === null) {
+        return raw;
+    }
+    // `Intl` throws on a min above max rather than clamping, and a config can hold that pair.
+    const min = options.minFractionDigits;
+    const max = options.maxFractionDigits !== null && min !== null && options.maxFractionDigits < min
+        ? min
+        : options.maxFractionDigits;
+    try {
+        const formatted = new Intl.NumberFormat(locale === '' ? undefined : locale, {
+            useGrouping: options.useGrouping,
+            minimumFractionDigits: min ?? undefined,
+            maximumFractionDigits: max ?? undefined,
+            ...(options.currency === undefined || options.currency === ''
+                ? {}
+                : {
+                    style: 'currency',
+                    currency: options.currency,
+                    // Carried through so a field set to read as `EUR 1,234.50` does not render as
+                    // `€1,234.50` here and then change shape the moment its control opens. `Intl`
+                    // defaults to `'symbol'` when this is absent, which is what made the two disagree.
+                    ...(options.currencyDisplay === undefined
+                        ? {}
+                        : {
+                            currencyDisplay: options.currencyDisplay,
+                        }),
+                }),
+        }).format(value);
+        return `${options.prefix ?? ''}${formatted}${options.suffix ?? ''}`;
+    }
+    catch {
+        return raw;
+    }
+}
+/**
+ * A stored date value as the picker draws it, in every selection mode.
+ *
+ * Each mode keeps its own separator on the way out, so the formatted string has the same shape as
+ * the stored one and reads as the same kind of answer — a range still reads as two dates with a
+ * `/` between them, not as one run-on string. A part that will not parse is passed through as it
+ * was stored rather than dropped, so a half-picked range still reads.
+ */
+function formatDateValue(raw, config) {
+    const options = { showTime: config.showTime, showSeconds: config.showSeconds };
+    const one = (part) => {
+        const date = parseLocalDateish(part);
+        return date === null ? part : formatDateByPattern(date, config.dateFormat, options);
+    };
+    if (config.selectionMode === 'range') {
+        // Split into exactly two, since either end may be empty and both have to survive the trip.
+        const [start = '', end = ''] = raw.split(DATE_RANGE_SEPARATOR);
+        return `${one(start)}${DATE_RANGE_SEPARATOR}${one(end)}`;
+    }
+    if (config.selectionMode === 'multiple') {
+        return raw
+            .split(MULTIPLE_DATE_SEPARATOR)
+            .map((part) => part.trim())
+            .filter((part) => part !== '')
+            .map(one)
+            .join(`${MULTIPLE_DATE_SEPARATOR} `);
+    }
+    return one(raw);
+}
+/**
+ * A stored option value as the label it was authored with.
+ *
+ * An option since removed falls back to the stored value rather than to an empty string, for the
+ * same reason the codecs above never rewrite one: the display form is a reading of what is
+ * stored, and answering with nothing would describe the row as blank when it is not.
+ */
+function choiceLabel(raw, options) {
+    const value = raw.trim();
+    return options.find((option) => option.value === value)?.label ?? raw;
+}
+/**
+ * The labels of a multi-value stored string, joined for reading.
+ *
+ * Joined with `', '` rather than with the wire separator on purpose: this string is only ever
+ * displayed, never parsed back, and reusing the storage separator would invite a later reader to
+ * try splitting on it.
+ */
+function choiceLabels(raw, options, separator) {
+    return raw
+        .split(separator)
+        .map((part) => part.trim())
+        .filter((part) => part !== '')
+        .map((part) => choiceLabel(part, options))
+        .join(', ');
+}
 /** The dates a stored value means. Never throws: an unreadable value is null, which
     `FieldInputComponent` reports rather than repairing. */
 function deserializeDateValue(raw, config) {
@@ -2495,6 +2835,48 @@ function deserializeDateValue(raw, config) {
         return dates.length === 0 ? null : dates;
     }
     return parseLocalDateish(value);
+}
+
+/**
+ * The control a borrowed field is drawn with.
+ *
+ * Precedence: the chosen control, otherwise the source field, otherwise {@link DEFAULT_FIELD_TYPE}
+ * with no config.
+ *
+ * **Never null.** The fallback is reached only when a column is inheriting and its source field
+ * definition has gone missing — deleted, or renamed since the data point was saved. Answering
+ * with nothing would leave a gap in the panel where a value used to be; a plain text box at least
+ * shows what is stored and lets it be corrected. Consistent with `formatFieldValue`, which
+ * returns a value it cannot format rather than blanking it.
+ *
+ * **Neither side is backfilled from the other.** A control's config belongs to the control's own
+ * field type; handing a Phone's mask to a Dropdown would be worse than the `null` that makes
+ * every renderer's `parse()` answer with that type's defaults.
+ *
+ * **A control whose type this package cannot draw is honoured, not dropped.**
+ * `FieldInputComponent` already degrades to a plain textarea for such a type, and showing that is
+ * more honest than silently ignoring a choice an author made on purpose. The admin's control
+ * picker filters those out up front, so reaching this is a sign the library changed under a saved
+ * config.
+ *
+ * Does not look anything up — the caller has already loaded the control group's definitions and
+ * found the one this column names. Keeping the lookup out is what lets this stay pure and lets
+ * the admin reuse it against options it holds in memory.
+ */
+function resolveFieldControl(control, source) {
+    return (usable(control, 'control') ??
+        usable(source, 'source') ?? {
+        fieldType: DEFAULT_FIELD_TYPE,
+        fieldConfig: null,
+        origin: 'fallback',
+    });
+}
+/** One side of the decision, or null when it names no field type to draw with. */
+function usable(candidate, origin) {
+    const fieldType = candidate?.fieldType.trim() ?? '';
+    return fieldType === ''
+        ? null
+        : { fieldType, fieldConfig: candidate?.fieldConfig ?? null, origin };
 }
 
 /**
@@ -2662,10 +3044,200 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
             args: [{ selector: 'vcr-field-input', standalone: true, imports: [FormsModule, Textarea], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (isRegistered()) {\n  @if (showLabel() && label() !== '') {\n    <label class=\"field-input__label\" [attr.for]=\"inputId()\">\n      {{ label() }}\n      @if (required()) {\n        <span class=\"field-input__required\" aria-hidden=\"true\">*</span>\n      }\n    </label>\n  }\n\n  <!-- The chosen renderer is created here \u2014 see the effect in this component's constructor. -->\n  <ng-container #anchor />\n\n  @if (storedValueUnreadable()) {\n    <small class=\"field-input__hint\">\n      The saved value isn\u2019t something this field can show. It is left untouched until you edit this\n      control.\n    </small>\n  }\n} @else {\n  <!-- The same bare textarea every field type used before this module existed. An unregistered\n       field type is not an error: it is a type nobody has written a renderer for yet, and the\n       platform stores its value as a string like every other. -->\n  <textarea\n    pTextarea\n    rows=\"5\"\n    [id]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"value.set($event ?? '')\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n  ></textarea>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:8px;min-width:0}.field-input__label{color:var(--content-color);font-size:13px;font-weight:600}.field-input__required{color:var(--error-color);margin-left:2px}.field-input__hint{color:var(--surface-500);font-size:12px;line-height:1.5}:host ::ng-deep textarea{width:100%}\n"] }]
         }], ctorParameters: () => [], propDecorators: { fieldType: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldType", required: true }] }], fieldConfig: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldConfig", required: false }] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], label: [{ type: i0.Input, args: [{ isSignal: true, alias: "label", required: false }] }], showLabel: [{ type: i0.Input, args: [{ isSignal: true, alias: "showLabel", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], blurred: [{ type: i0.Output, args: ["blurred"] }], anchor: [{ type: i0.ViewChild, args: ['anchor', { ...{ read: ViewContainerRef }, isSignal: true }] }] } });
 
+/**
+ * How many characters of a URL are shown before it is elided.
+ *
+ * A URL is the one display form that routinely runs past the width of the panel it sits in, and
+ * unlike the other types there is nothing in its config to shorten it with. The full address stays
+ * reachable as the link target and in the `title`, so nothing is lost by cutting the text.
+ */
+const URL_DISPLAY_MAX_LENGTH = 60;
+/**
+ * The renderer kinds whose edit is finished by leaving the control rather than by any one change.
+ *
+ * This is the continuous-entry/discrete-choice split, and it is also exactly the set of renderers
+ * that declare the optional `blurred` output — not a coincidence, since a control you type into is
+ * precisely one with a meaningful "done typing" moment. A discrete-choice kind has no blur to wait
+ * for (and its PrimeNG overlay is appended to `body`, so watching focus leave the host would end
+ * the edit the moment the panel opened), so each change is taken as the edit itself.
+ */
+const COMMIT_ON_BLUR_KINDS = [
+    'text',
+    'textarea',
+    'number',
+    'currency',
+];
+/**
+ * A field's value, read as text until it is clicked, then edited with that field's real control.
+ *
+ * ## What this adds, and what it does not
+ *
+ * The control itself is **entirely {@link FieldInputComponent}'s job** — that facade already
+ * resolves the descriptor for a `fieldType`, parses the raw `fieldConfig`, decodes the wire value,
+ * mounts the right renderer and re-serialises on change. Nothing about drawing a control is
+ * repeated here. What this adds is the half the facade has no opinion about: a read mode, and the
+ * swap between the two.
+ *
+ * The read mode is `formatFieldValue`, which is the same function that produces the
+ * `valueFormatted` sent beside a stored value — so what a panel shows and what the backend has
+ * recorded as the display form cannot drift.
+ *
+ * ## Which field type this draws
+ *
+ * This takes a `fieldType`/`fieldConfig` pair and asks no questions about where it came from. For
+ * a field read *through* another — a Custom Object Data Point column — that pair comes from
+ * `resolveFieldControl`, which decides between the source field definition's own settings and a
+ * local override. Keeping that precedence outside this component is deliberate: the resolution
+ * rule is shared with authoring UI that never mounts a control.
+ *
+ * Because the facade dispatches through this package's registry, a `fieldType` the registry does
+ * not carry falls back to a plain textarea in edit mode — not merely to an unformatted reading.
+ */
+class FieldValueComponent {
+    fieldType = input.required(...(ngDevMode ? [{ debugName: "fieldType" }] : /* istanbul ignore next */ []));
+    /** The field's settings, as the raw wire string — same contract as `FieldInputComponent`. */
+    fieldConfig = input(null, ...(ngDevMode ? [{ debugName: "fieldConfig" }] : /* istanbul ignore next */ []));
+    fieldKey = input('', ...(ngDevMode ? [{ debugName: "fieldKey" }] : /* istanbul ignore next */ []));
+    label = input('', ...(ngDevMode ? [{ debugName: "label" }] : /* istanbul ignore next */ []));
+    showLabel = input(false, ...(ngDevMode ? [{ debugName: "showLabel" }] : /* istanbul ignore next */ []));
+    required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
+    /** Draws the control greyed once open. Distinct from {@link readonly}, which never opens one. */
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    /** Never enters edit mode — the value reads as text and nothing invites a click. */
+    readonly = input(false, ...(ngDevMode ? [{ debugName: "readonly" }] : /* istanbul ignore next */ []));
+    /** The wire value. Written only when an edit is committed, never on open or cancel. */
+    value = model('', ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
+    /**
+     * The settled wire string, once an edit is accepted.
+     *
+     * Silent when an edit leaves the value as it was, so opening a control and closing it without
+     * touching anything costs no save. A consumer persists on this rather than on `value`, which
+     * also moves when its own binding does.
+     */
+    committed = output();
+    editAnchor = viewChild('editAnchor', ...(ngDevMode ? [{ debugName: "editAnchor" }] : /* istanbul ignore next */ []));
+    editing = signal(false, ...(ngDevMode ? [{ debugName: "editing" }] : /* istanbul ignore next */ []));
+    /** The in-progress value while a control is open. Separate from {@link value} so a cancel has
+        something to discard and so a continuous-entry kind does not write on every keystroke. */
+    draft = signal('', ...(ngDevMode ? [{ debugName: "draft" }] : /* istanbul ignore next */ []));
+    /** What {@link draft} started as, so a commit can tell an edit from a no-op. */
+    committedValue = '';
+    descriptor = computed(() => findFieldRenderer(this.fieldType()), ...(ngDevMode ? [{ debugName: "descriptor" }] : /* istanbul ignore next */ []));
+    kind = computed(() => this.descriptor()?.kind ?? null, ...(ngDevMode ? [{ debugName: "kind" }] : /* istanbul ignore next */ []));
+    /** Parsed only for the one display decision that needs it — see {@link isUrl}. A `computed` so
+        its identity is stable, matching the reason `FieldInputComponent` does the same. */
+    config = computed(() => this.descriptor()?.parse(this.fieldConfig()) ?? null, ...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    canEdit = computed(() => !this.readonly(), ...(ngDevMode ? [{ debugName: "canEdit" }] : /* istanbul ignore next */ []));
+    /** The value as its config says to read it — grouping, currency, date format, option labels. */
+    displayText = computed(() => formatFieldValue(this.fieldType(), this.value(), this.fieldConfig()), ...(ngDevMode ? [{ debugName: "displayText" }] : /* istanbul ignore next */ []));
+    isEmpty = computed(() => this.displayText().trim() === '', ...(ngDevMode ? [{ debugName: "isEmpty" }] : /* istanbul ignore next */ []));
+    /**
+     * Whether the value should read as a link.
+     *
+     * The one display form that is not text, and the only branch in this component's read mode. A
+     * `display` channel on the descriptor would be the general answer and is not worth it for one
+     * implementor — the same reasoning that keeps four table-only members off a data point column.
+     */
+    isUrl = computed(() => this.kind() === 'text' &&
+        this.config()?.inputType === 'url' &&
+        this.value().trim() !== '', ...(ngDevMode ? [{ debugName: "isUrl" }] : /* istanbul ignore next */ []));
+    /** The full address, for `href` and for the tooltip. Never the elided form. */
+    href = computed(() => this.value().trim(), ...(ngDevMode ? [{ debugName: "href" }] : /* istanbul ignore next */ []));
+    linkText = computed(() => {
+        const url = this.href();
+        return url.length > URL_DISPLAY_MAX_LENGTH ? `${url.slice(0, URL_DISPLAY_MAX_LENGTH)}…` : url;
+    }, ...(ngDevMode ? [{ debugName: "linkText" }] : /* istanbul ignore next */ []));
+    /** See {@link COMMIT_ON_BLUR_KINDS}. An unregistered type gets the facade's textarea, which is
+        continuous entry, so it belongs on this side of the split too. */
+    commitsOnBlur = computed(() => {
+        const kind = this.kind();
+        return kind === null || COMMIT_ON_BLUR_KINDS.includes(kind);
+    }, ...(ngDevMode ? [{ debugName: "commitsOnBlur" }] : /* istanbul ignore next */ []));
+    /** Enter ends an edit everywhere a newline is not the point — so not in a textarea. */
+    submitsOnEnter = computed(() => this.kind() !== 'textarea', ...(ngDevMode ? [{ debugName: "submitsOnEnter" }] : /* istanbul ignore next */ []));
+    constructor() {
+        // Moves focus into the control once it exists, so a click lands the caret where it was aimed
+        // and a keyboard user is not dropped back at the top of the page. Reads only `editing`: the
+        // anchor is looked up untracked, since re-running when the view query settles would re-focus
+        // a control the user may have already moved away from.
+        effect(() => {
+            if (!this.editing()) {
+                return;
+            }
+            const host = untracked(() => this.editAnchor()?.nativeElement);
+            host?.querySelector('input, textarea, [tabindex]:not([tabindex="-1"])')?.focus();
+        });
+    }
+    beginEdit() {
+        if (!this.canEdit() || this.editing()) {
+            return;
+        }
+        this.committedValue = this.value();
+        this.draft.set(this.committedValue);
+        this.editing.set(true);
+    }
+    /**
+     * Takes a renderer's new value, and for a discrete-choice kind treats it as the edit itself.
+     *
+     * Written out rather than left as a two-way binding precisely so this branch has somewhere to
+     * live: `[(value)]` would give the draft no chance to decide whether a change ends the edit.
+     */
+    onDraftChange(next) {
+        this.draft.set(next);
+        if (!this.commitsOnBlur()) {
+            this.commit();
+        }
+    }
+    /** Accepts the edit. A no-op write emits nothing — see {@link committed}. */
+    commit() {
+        if (!this.editing()) {
+            return;
+        }
+        const next = this.draft();
+        this.editing.set(false);
+        if (next === this.committedValue) {
+            return;
+        }
+        this.committedValue = next;
+        this.value.set(next);
+        this.committed.emit(next);
+    }
+    /** Abandons the edit, leaving the stored value exactly as it was. */
+    cancel() {
+        this.editing.set(false);
+        this.draft.set(this.committedValue);
+    }
+    onKeydown(event) {
+        if (event.key === 'Escape') {
+            event.stopPropagation();
+            this.cancel();
+            return;
+        }
+        if (event.key === 'Enter' && this.submitsOnEnter()) {
+            event.preventDefault();
+            this.commit();
+        }
+    }
+    onReadKeydown(event) {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+            return;
+        }
+        // Space would otherwise scroll the panel out from under the control being opened.
+        event.preventDefault();
+        this.beginEdit();
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: FieldValueComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: FieldValueComponent, isStandalone: true, selector: "vcr-field-value", inputs: { fieldType: { classPropertyName: "fieldType", publicName: "fieldType", isSignal: true, isRequired: true, transformFunction: null }, fieldConfig: { classPropertyName: "fieldConfig", publicName: "fieldConfig", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, label: { classPropertyName: "label", publicName: "label", isSignal: true, isRequired: false, transformFunction: null }, showLabel: { classPropertyName: "showLabel", publicName: "showLabel", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, readonly: { classPropertyName: "readonly", publicName: "readonly", isSignal: true, isRequired: false, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", committed: "committed" }, viewQueries: [{ propertyName: "editAnchor", first: true, predicate: ["editAnchor"], descendants: true, isSignal: true }], ngImport: i0, template: "@if (showLabel() && label() !== '') {\n  <span class=\"field-value__label\">\n    {{ label() }}\n    @if (required()) {\n      <span class=\"field-value__required\" aria-hidden=\"true\">*</span>\n    }\n  </span>\n}\n\n@if (editing()) {\n  <!-- Blur is listened for on the wrapper rather than on the facade for the kinds that have no\n       `blurred` output at all; `commitsOnBlur` decides which signal actually ends the edit. -->\n  <div #editAnchor class=\"field-value__edit\" (keydown)=\"onKeydown($event)\">\n    <vcr-field-input\n      [fieldType]=\"fieldType()\"\n      [fieldConfig]=\"fieldConfig()\"\n      [fieldKey]=\"fieldKey()\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [value]=\"draft()\"\n      (valueChange)=\"onDraftChange($event)\"\n      (blurred)=\"commit()\"\n    />\n  </div>\n} @else if (isUrl()) {\n  <div class=\"field-value__row\">\n    <a\n      class=\"field-value__link\"\n      [href]=\"href()\"\n      [title]=\"href()\"\n      target=\"_blank\"\n      rel=\"noopener noreferrer\"\n      >{{ linkText() }}</a\n    >\n    @if (canEdit()) {\n      <!-- A separate affordance on purpose: clicking the link itself has to follow it, so the\n           value cannot double as the thing that opens the control the way plain text does. -->\n      <button\n        type=\"button\"\n        class=\"field-value__edit-button\"\n        [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n        (click)=\"beginEdit()\"\n      >\n        Edit\n      </button>\n    }\n  </div>\n} @else if (canEdit()) {\n  <div\n    class=\"field-value__read field-value__read--editable\"\n    role=\"button\"\n    tabindex=\"0\"\n    [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n    (click)=\"beginEdit()\"\n    (keydown)=\"onReadKeydown($event)\"\n  >\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n} @else {\n  <div class=\"field-value__read\">\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:4px;min-width:0}.field-value__label{color:var(--content-color);font-size:13px;font-weight:600}.field-value__required{color:var(--error-color);margin-left:2px}.field-value__row{align-items:center;display:flex;gap:8px;min-width:0}.field-value__read{border:1px solid transparent;border-radius:6px;color:var(--content-color);font-size:14px;min-height:34px;overflow-wrap:anywhere;padding:6px 8px}.field-value__read--editable{cursor:text}.field-value__read--editable:hover,.field-value__read--editable:focus-visible{border-color:var(--surface-300)}.field-value__placeholder{color:var(--surface-500)}.field-value__link{color:var(--primary-color);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-value__edit-button{background:none;border:none;color:var(--surface-500);cursor:pointer;flex:none;font-size:12px;padding:2px 4px;text-decoration:underline}.field-value__edit-button:hover{color:var(--content-color)}\n"], dependencies: [{ kind: "component", type: FieldInputComponent, selector: "vcr-field-input", inputs: ["fieldType", "fieldConfig", "fieldKey", "label", "showLabel", "required", "disabled", "invalid", "value"], outputs: ["valueChange", "blurred"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: FieldValueComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-field-value', standalone: true, imports: [FieldInputComponent], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (showLabel() && label() !== '') {\n  <span class=\"field-value__label\">\n    {{ label() }}\n    @if (required()) {\n      <span class=\"field-value__required\" aria-hidden=\"true\">*</span>\n    }\n  </span>\n}\n\n@if (editing()) {\n  <!-- Blur is listened for on the wrapper rather than on the facade for the kinds that have no\n       `blurred` output at all; `commitsOnBlur` decides which signal actually ends the edit. -->\n  <div #editAnchor class=\"field-value__edit\" (keydown)=\"onKeydown($event)\">\n    <vcr-field-input\n      [fieldType]=\"fieldType()\"\n      [fieldConfig]=\"fieldConfig()\"\n      [fieldKey]=\"fieldKey()\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [value]=\"draft()\"\n      (valueChange)=\"onDraftChange($event)\"\n      (blurred)=\"commit()\"\n    />\n  </div>\n} @else if (isUrl()) {\n  <div class=\"field-value__row\">\n    <a\n      class=\"field-value__link\"\n      [href]=\"href()\"\n      [title]=\"href()\"\n      target=\"_blank\"\n      rel=\"noopener noreferrer\"\n      >{{ linkText() }}</a\n    >\n    @if (canEdit()) {\n      <!-- A separate affordance on purpose: clicking the link itself has to follow it, so the\n           value cannot double as the thing that opens the control the way plain text does. -->\n      <button\n        type=\"button\"\n        class=\"field-value__edit-button\"\n        [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n        (click)=\"beginEdit()\"\n      >\n        Edit\n      </button>\n    }\n  </div>\n} @else if (canEdit()) {\n  <div\n    class=\"field-value__read field-value__read--editable\"\n    role=\"button\"\n    tabindex=\"0\"\n    [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n    (click)=\"beginEdit()\"\n    (keydown)=\"onReadKeydown($event)\"\n  >\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n} @else {\n  <div class=\"field-value__read\">\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:4px;min-width:0}.field-value__label{color:var(--content-color);font-size:13px;font-weight:600}.field-value__required{color:var(--error-color);margin-left:2px}.field-value__row{align-items:center;display:flex;gap:8px;min-width:0}.field-value__read{border:1px solid transparent;border-radius:6px;color:var(--content-color);font-size:14px;min-height:34px;overflow-wrap:anywhere;padding:6px 8px}.field-value__read--editable{cursor:text}.field-value__read--editable:hover,.field-value__read--editable:focus-visible{border-color:var(--surface-300)}.field-value__placeholder{color:var(--surface-500)}.field-value__link{color:var(--primary-color);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-value__edit-button{background:none;border:none;color:var(--surface-500);cursor:pointer;flex:none;font-size:12px;padding:2px 4px;text-decoration:underline}.field-value__edit-button:hover{color:var(--content-color)}\n"] }]
+        }], ctorParameters: () => [], propDecorators: { fieldType: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldType", required: true }] }], fieldConfig: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldConfig", required: false }] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], label: [{ type: i0.Input, args: [{ isSignal: true, alias: "label", required: false }] }], showLabel: [{ type: i0.Input, args: [{ isSignal: true, alias: "showLabel", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], readonly: [{ type: i0.Input, args: [{ isSignal: true, alias: "readonly", required: false }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], committed: [{ type: i0.Output, args: ["committed"] }], editAnchor: [{ type: i0.ViewChild, args: ['editAnchor', { isSignal: true }] }] } });
+
 /*
  * Public API Surface of velocity-core-renderer
  *
- * Seven of the nine kinds. See `built-in-field-renderers.ts` for what is still absent and why.
+ * Eight of the nine kinds. See `built-in-field-renderers.ts` for what is still absent and why.
  */
 // Contract
 
@@ -2673,5 +3245,5 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
  * Generated bundle index. Do not edit.
  */
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textareaFieldRenderer, toFieldConfigJson };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textareaFieldRenderer, toFieldConfigJson };
 //# sourceMappingURL=velocity-core-renderer.mjs.map

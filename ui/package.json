@@ -1,0 +1,4 @@
+{
+  "module": "../fesm2022/velocity-core-renderer-ui.mjs",
+  "typings": "../types/velocity-core-renderer-ui.d.ts"
+}
