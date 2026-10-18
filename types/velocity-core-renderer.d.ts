@@ -217,6 +217,8 @@ declare function sortChoiceOptions(options: readonly FieldChoiceOption[], sort: 
 declare function parseChoiceOptions(entries: unknown[] | null, fallback: FieldChoiceOption[], readText: (raw: unknown, fallbackText: string) => string, readEntry: (raw: unknown) => Record<string, unknown> | null): FieldChoiceOption[];
 /** True when some choice has no stored value — it cannot be saved, so it is not a choice yet. */
 declare function hasBlankChoiceValue(options: readonly FieldChoiceOption[]): boolean;
+/** True when some choice has no label — it is what the person choosing actually reads. */
+declare function hasBlankChoiceLabel(options: readonly FieldChoiceOption[]): boolean;
 /**
  * True when two choices share a stored value.
  *
@@ -314,6 +316,8 @@ interface CheckboxFieldConfig extends FieldConfigExtras {
      */
     minSelected: number;
     maxSelected: number;
+    /** Draw a "Select all" box above the options, ticking or clearing every one of them at once. */
+    showToggleAll: boolean;
     size: FieldInputSize;
 }
 declare const DEFAULT_CHECKBOX_FIELD_CONFIG: CheckboxFieldConfig;
@@ -703,6 +707,12 @@ interface RadioFieldConfig extends FieldConfigExtras {
      * click. Worth having on any field that is not required.
      */
     allowClear: boolean;
+    /**
+     * Draw the choices as buttons on one track instead of radio buttons. The selected choice is a
+     * filled button; the others stay as labels beside it. Always side by side, so `orientation` is
+     * ignored while this is on.
+     */
+    buttonType: boolean;
     size: FieldInputSize;
 }
 declare const DEFAULT_RADIO_FIELD_CONFIG: RadioFieldConfig;
@@ -882,6 +892,10 @@ interface TextFieldConfig extends FieldConfigExtras {
      * already stored.
      */
     mask: string;
+    /** Whether a Clear button is drawn beside the control once it holds a value — this renderer's
+        own affordance rather than a native one, since `pInputText` is a directive over a plain
+        `<input>` with nothing built in. See `TextFieldInputComponent`. */
+    showClear: boolean;
     size: FieldInputSize;
 }
 declare const DEFAULT_TEXT_FIELD_CONFIG: TextFieldConfig;
@@ -912,7 +926,21 @@ interface TextareaFieldConfig extends FieldConfigExtras {
     maxLength: number | null;
     /** Grow to fit the content as the user types, rather than scrolling within `rows`. */
     autoResize: boolean;
+    /** Whether a Clear button is drawn beneath the control once it holds a value — this renderer's
+        own affordance rather than a native one, since `pTextarea` is a directive over a plain
+        `<textarea>` with nothing built in. See `TextareaFieldInputComponent`. */
+    showClear: boolean;
     size: FieldInputSize;
+    /**
+     * Draw a rich-text box with a five-button toolbar (bold, italic, underline, bulleted and numbered
+     * lists) instead of a plain `<textarea>`, and store the value as sanitized HTML. See
+     * `RichTextEditorComponent`.
+     *
+     * `rows` still sets the box's height. `placeholder`, `maxLength`, `autoResize` and `showClear`
+     * apply only to the plain textarea — the rich box always grows to fit, and a character limit
+     * measured against markup would count tags the person typing never sees.
+     */
+    wysiwyg: boolean;
 }
 /** Matches the `rows="5"` the raw-JSON textarea this renderer replaces has always used. */
 declare const DEFAULT_TEXTAREA_FIELD_CONFIG: TextareaFieldConfig;
@@ -1332,6 +1360,7 @@ declare function dateFormatNamesDay(format: string): boolean;
  * leaves the value as it was — `2`, `20` and `202` are all on the way to `2026`.
  */
 declare function parseDaylessDate(text: string, format: string): Date | null;
+declare function dateFormatToInputMask(format: string): string | null;
 /**
  * `1234.5` — the number, plainly.
  *
@@ -1362,6 +1391,35 @@ declare function parseFiniteNumber(raw: string): number | null;
  * mapped an unreadable value to false would be asserting an answer nobody gave.
  */
 declare function parseLooseBoolean(raw: string, trueText: string, falseText: string): boolean | null;
+
+/**
+ * Conversions for the HTML a `TextArea` field stores once `wysiwyg` is on.
+ *
+ * String-only, with no DOM, so the read-mode formatter can run wherever `formatFieldValue` does.
+ * None of these sanitize: the editor sanitizes what it writes, and Angular sanitizes again on the
+ * way into `[innerHTML]`. The only job here is moving between the stored HTML and plain text.
+ */
+/** Whether `value` already holds markup, as opposed to text saved before `wysiwyg` was switched
+    on. */
+declare function looksLikeHtml(value: string): boolean;
+/**
+ * Plain text as the HTML the editor should open with: escaped, with each newline as a `<br>`.
+ *
+ * What keeps an existing value's line breaks when an author turns `wysiwyg` on for a field that
+ * already holds text — dropped into `innerHTML` as-is, every paragraph would run together.
+ */
+declare function plainTextToHtml(text: string): string;
+/** `value` as editor HTML whatever it was saved as — markup passes through, plain text is
+    converted. */
+declare function toRichTextHtml(value: string): string;
+/**
+ * Stored HTML as the plain text a grid cell or `valueFormatted` should show.
+ *
+ * Block boundaries (`<br>`, closing `p`/`div`/`li`) become newlines and list items get a leading
+ * bullet, so a formatted note still reads as separate lines once its tags are gone. `&amp;` is
+ * decoded last so `&amp;lt;` comes out as the literal `&lt;` the author typed.
+ */
+declare function richTextToPlainText(html: string): string;
 
 /**
  * Draws a single-line text field.
@@ -1407,6 +1465,11 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
     readonly hasIcons: _angular_core.Signal<boolean>;
     /** Whether either edge carries a word. */
     readonly hasText: _angular_core.Signal<boolean>;
+    /** As `NumberFieldInputComponent`'s native `showClear`, but drawn by hand: `pInputText` is a
+        directive over a plain `<input>` with no clear affordance of its own, unlike `p-inputnumber`
+        or `p-select`. Offered only once there is something to clear, same as those controls' own
+        rule. */
+    readonly hasClear: _angular_core.Signal<boolean>;
     /**
      * Which control draws the value itself, inside whichever wrapper {@link shape} picks.
      *
@@ -1429,7 +1492,8 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
      *   `p-iconfield`'s padding reaches. `p-inputgroup` has no such limit (PrimeNG ships an explicit
      *   `.p-inputgroup > p-inputmask > .p-inputtext` rule), so its attached boxes are the one
      *   arrangement that can hold every combination — and a field mixing a word and an icon draws
-     *   both that way.
+     *   both that way. The Clear button is the same story: it is a trailing addon, which only a
+     *   group has room for.
      * - `iconfield` for the plain icon case, which keeps icons inside the input as before.
      * - `bare` otherwise.
      */
@@ -1452,6 +1516,7 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     /** `p-inputmask` emits null for a cleared control; the wire value for text is `''`. */
     onValueChange(next: string | null): void;
+    clear(): void;
     /**
      * One edge's value, but only when that edge is in the mode asked for.
      *
@@ -1483,6 +1548,11 @@ declare class TextareaFieldInputComponent implements FieldRenderer<TextareaField
     readonly inputId: _angular_core.Signal<string>;
     /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
+    /** As `NumberFieldInputComponent`'s native `showClear`, but drawn by hand: `pTextarea` is a
+        directive over a plain `<textarea>` with no clear affordance of its own. Offered only once
+        there is something to clear, same as the native control's own rule. */
+    readonly canClear: _angular_core.Signal<boolean>;
+    clear(): void;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<TextareaFieldInputComponent, never>;
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<TextareaFieldInputComponent, "vcr-textarea-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
 }
@@ -1543,6 +1613,25 @@ declare class NumberFieldInputComponent implements FieldRenderer<NumberFieldConf
         answer wanted here. */
     readonly isNegative: _angular_core.Signal<boolean>;
     readonly showsNegativeInRed: _angular_core.Signal<boolean>;
+    /**
+     * Why the value is out of bounds, or `null` while it is not.
+     *
+     * `p-inputnumber` is not given `min`/`max` at all — see the template — because its own answer to
+     * a value outside them is to silently rewrite what the user typed to the nearest bound on blur.
+     * That is indistinguishable from data loss to whoever is filling the field in: the number they
+     * typed is simply gone, replaced with one they did not enter. This reports the same fact as a
+     * message instead, and leaves the typed value exactly as typed until the user changes it
+     * themselves.
+     */
+    readonly rangeError: _angular_core.Signal<string | null>;
+    readonly hasRangeError: _angular_core.Signal<boolean>;
+    /** A trailing space folded into the prefix so a currency-style marker reads as `PHP 1,000`
+        rather than `PHP1,000` — matching {@link displaySuffix}, which leads with one on the other
+        edge. Untouched when there is no prefix, so an unconfigured edge stays exactly empty rather
+        than a stray leading space. */
+    readonly displayPrefix: _angular_core.Signal<string>;
+    /** As {@link displayPrefix}, leading rather than trailing: `1,000 PHP` rather than `1,000PHP`. */
+    readonly displaySuffix: _angular_core.Signal<string>;
     /** Whether the control has the caret. Tracked only so the accounting form can stand down while
         the number is being edited — see `showsParenthesised`. */
     private readonly focused;
@@ -1649,6 +1738,14 @@ declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxField
      */
     readonly singleValue: _angular_core.Signal<boolean | null>;
     readonly groupValue: _angular_core.Signal<string[]>;
+    readonly allOptionValues: _angular_core.Signal<string[]>;
+    /** The "Select all" row is author-enabled and only worth showing with something to toggle. */
+    readonly showToggleAll: _angular_core.Signal<boolean>;
+    /** Whether every option is currently ticked. Drives the "Select all" toggle's own checked state. */
+    readonly isAllChecked: _angular_core.Signal<boolean>;
+    /** Some, but not all, options are ticked — shown as the toggle's indeterminate state. */
+    readonly isAllIndeterminate: _angular_core.Signal<boolean>;
+    readonly toggleAllId: _angular_core.Signal<string>;
     readonly isChecked: _angular_core.Signal<boolean>;
     /** Only ever true on a tri-state single box: a group has no third state to show. */
     readonly isIndeterminate: _angular_core.Signal<boolean>;
@@ -1671,6 +1768,8 @@ declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxField
     onSingleChange(): void;
     /** PrimeNG hands back the new array; the empty list is what "nothing ticked" means. */
     onGroupChange(next: string[] | null | undefined): void;
+    /** Ticks every option, or clears the selection entirely. */
+    onToggleAll(checked: boolean): void;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<CheckboxFieldInputComponent, never>;
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<CheckboxFieldInputComponent, "vcr-checkbox-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
 }
@@ -1737,6 +1836,9 @@ declare class CurrencyFieldInputComponent implements FieldRenderer<CurrencyField
  * The Clear button exists because radio buttons have no native way to deselect: without it a user
  * who picks a value by mistake cannot undo it, and the field goes from empty to permanently
  * answered on the first click. Offered only when `allowClear` is set — see `RadioFieldConfig`.
+ *
+ * `buttonType` replaces the circles with one track of buttons: the selected choice is filled and
+ * the others stay as labels beside it.
  */
 declare class RadioFieldInputComponent implements FieldRenderer<RadioFieldConfig, string | null> {
     readonly config: _angular_core.InputSignal<RadioFieldConfig>;
@@ -1848,6 +1950,25 @@ declare class DateFieldInputComponent implements FieldRenderer<DateFieldConfig, 
         typed text on its own. See {@link onTextInput}. */
     private readonly namesDay;
     /**
+     * The panel `p-datepicker` actually opens on: {@link DateFieldConfig.view}, except a Year-only
+     * format forces `'year'` regardless of what is configured.
+     *
+     * `p-datepicker` throws on its own `yy` format unless `view` is `'year'` — see {@link onTextInput}
+     * — so a saved config with `dateFormat: 'yy'` and some other `view` (from before this existed, or
+     * edited through the raw-JSON textarea) would crash the picker rather than merely show the wrong
+     * panel. Deriving it here rather than in the config editor covers both.
+     */
+    readonly effectiveView: _angular_core.Signal<"date" | "month" | "year">;
+    /**
+     * {@link DateFieldConfig.numberOfMonths}, except never `0`.
+     *
+     * The config editor writes `0` for a Year-only format, since side-by-side months mean nothing
+     * once there's only a year grid to show — but `p-datepicker` builds one calendar group per
+     * month and renders the *entire* panel, year grid included, inside that group. `0` months
+     * means zero groups, which is an empty panel rather than a year-only one.
+     */
+    readonly effectiveNumberOfMonths: _angular_core.Signal<number>;
+    /**
      * What `p-datepicker` is actually bound to: {@link value}, except while the user is typing.
      *
      * ## The problem this solves
@@ -1919,11 +2040,95 @@ declare class DateFieldInputComponent implements FieldRenderer<DateFieldConfig, 
 }
 
 /**
+ * Draws a `Media` field: the glyph for the kind of file the slot accepts, at the configured size.
+ *
+ * A placeholder, and the only renderer in the module that edits nothing — there is no upload
+ * control here yet, so `value` is declared (the contract requires it) and never written. That is
+ * also why the registry pairs this with an identity codec: a value already stored against a Media
+ * field passes straight through untouched rather than being rewritten by a renderer that cannot
+ * read it. See `mediaFieldRenderer`.
+ *
+ * `required` is accepted and deliberately unused for the same reason — there is nothing to require
+ * until there is something to fill in. `disabled` and `invalid` are honoured, since both are about
+ * how the placeholder itself is drawn.
+ */
+declare class MediaFieldInputComponent implements FieldRenderer<MediaFieldConfig, string> {
+    readonly config: _angular_core.InputSignal<MediaFieldConfig>;
+    /** Declared to satisfy `FieldRenderer` and never set — this renderer has no control to edit
+        with. The facade therefore never calls `commit`, and the stored value survives every save. */
+    readonly value: _angular_core.ModelSignal<string>;
+    readonly fieldKey: _angular_core.InputSignal<string>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    /** Matches what every other renderer derives, so `FieldInputComponent`'s label points at the
+        element this one draws. */
+    readonly inputId: _angular_core.Signal<string>;
+    /**
+     * What a screen reader announces in place of the glyph. The icon fonts carry no text of their
+     * own, so without this the control is silent.
+     *
+     * One glyph and one word, where this used to pick between an image and a video icon off the
+     * old `fileType` member. `MediaFileExtension` replaced it and offers only `'all'` so far, which
+     * says nothing about which kind of file a slot holds — and guessing from a value that cannot
+     * express the difference would label a video field "Image". Worth revisiting once the real
+     * extension list lands, since an extension does carry that answer.
+     */
+    readonly iconLabel = "Media";
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<MediaFieldInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<MediaFieldInputComponent, "vcr-media-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
+}
+
+/** The `document.execCommand` names behind the five toolbar buttons. */
+type RichTextCommand = 'bold' | 'italic' | 'underline' | 'insertUnorderedList' | 'insertOrderedList';
+/**
+ * The rich-text box a `TextArea` field draws when its config has `wysiwyg` on.
+ *
+ * A trimmed port of the client's notes composer (`app-wysiwyg-editor`): the same `contenteditable`
+ * box and `execCommand` formatting, keeping only its five format buttons — no placeholder,
+ * attachments, notify list, mentions or submit button, since a field saves through its host like
+ * every other renderer.
+ *
+ * The icons are inline SVG copied from Lucide rather than `@lucide/angular`, so this package does
+ * not take a peer dependency for five glyphs.
+ *
+ * Not registered on its own: `TextareaFieldInputComponent` draws it in place of its `<textarea>`.
+ */
+declare class RichTextEditorComponent {
+    /** Sanitized HTML. */
+    readonly value: _angular_core.ModelSignal<string>;
+    readonly inputId: _angular_core.InputSignal<string>;
+    /** The box's resting height, in lines. It grows past this as content is added. */
+    readonly rows: _angular_core.InputSignal<number>;
+    readonly required: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    /** Fires when focus leaves the whole composer — not when it moves between the box and its
+        toolbar. */
+    readonly blurred: _angular_core.OutputEmitterRef<void>;
+    private readonly sanitizer;
+    private readonly composer;
+    private readonly editor;
+    readonly minHeight: _angular_core.Signal<string>;
+    /**
+     * The last value this component wrote itself. `innerHTML` is only replaced when `value` arrives
+     * as something else, i.e. from the host — rewriting it on every keystroke would throw the caret
+     * back to the start of the box.
+     */
+    private lastEmitted;
+    constructor();
+    format(command: RichTextCommand): void;
+    onInput(): void;
+    onFocusOut(event: FocusEvent): void;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<RichTextEditorComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<RichTextEditorComponent, "vcr-rich-text-editor", never, { "value": { "alias": "value"; "required": false; "isSignal": true; }; "inputId": { "alias": "inputId"; "required": false; "isSignal": true; }; "rows": { "alias": "rows"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
+}
+
+/**
  * Which renderer draws which `fieldType`.
  *
- * Eight of the nine kinds, across eighteen wire types. Still absent: `media`, which draws a
- * placeholder that edits nothing, so it is worth nothing to a consumer until the media picker
- * itself moves. An unregistered type is not an error: {@link FieldInputComponent} falls back to a
+ * All nine kinds, across nineteen wire types. `media` still draws a placeholder that edits
+ * nothing — see `mediaFieldRenderer`. An unregistered type is not an error: {@link FieldInputComponent} falls back to a
  * plain textarea, exactly as it does in the admin today — but note that the fallback is a
  * *textarea*, so a consumer resolving a control through `resolveFieldControl` gets a free-text box
  * for an unregistered type rather than merely an unformatted reading of the value.
@@ -1937,8 +2142,8 @@ declare class DateFieldInputComponent implements FieldRenderer<DateFieldConfig, 
  * package can draw one.
  *
  * Several types deliberately share one renderer, differing only in the config seeded below —
- * `Text`/`Phone`/`Url`, `Number`/`Decimal`, and `DatePicker` with the two retired date
- * types at the end of the map. See `FieldRendererKind`.
+ * `Text` with the retired `Email`/`Url`/`Phone`, `Number`/`Decimal`, and `DatePicker` with the
+ * two retired date types at the end of the map. See `FieldRendererKind`.
  */
 declare const FIELD_DEFINITION_TYPE_RENDERERS: Partial<Record<FieldDefinitionType, ErasedFieldRendererDescriptor>>;
 /**
@@ -1950,6 +2155,14 @@ declare const FIELD_DEFINITION_TYPE_RENDERERS: Partial<Record<FieldDefinitionTyp
 declare function findFieldRenderer(fieldType: string): ErasedFieldRendererDescriptor | null;
 /** Whether `fieldType` has a typed renderer. */
 declare function isFieldRendererRegistered(fieldType: string): boolean;
+/**
+ * Whether a field's value is a web address — what decides drawing it as a link.
+ *
+ * Read off the config, not the field type: a `Text` field with Input Type URL and a retired `Url`
+ * field (whose seed sets the same input type) are the same control, and a `Url` field whose input
+ * type was switched to something else no longer holds an address.
+ */
+declare function isUrlField(fieldType: string, fieldConfig: string | null): boolean;
 /**
  * A stored value as it should be *read* — the string to show where a control is not being drawn,
  * and the `valueFormatted` to send beside `value` on a save.
@@ -1981,6 +2194,17 @@ declare function currencyFieldRenderer(overrides?: Partial<CurrencyFieldConfig>)
 declare function checkboxFieldRenderer(overrides?: Partial<CheckboxFieldConfig>): ErasedFieldRendererDescriptor;
 declare function radioFieldRenderer(overrides?: Partial<RadioFieldConfig>): ErasedFieldRendererDescriptor;
 declare function selectFieldRenderer(overrides?: Partial<SelectFieldConfig>): ErasedFieldRendererDescriptor;
+/**
+ * The one descriptor whose renderer edits nothing.
+ *
+ * `MediaFieldInputComponent` draws a placeholder glyph and has no control on it, so it never emits
+ * and `serialize` is only ever handed a value this codec itself produced. Identity both ways is
+ * therefore not a shortcut but the only correct choice: a value already stored against a Media
+ * field passes through untouched, survives every save, and — because the round trip is exact —
+ * is never mistaken for unreadable by `FieldInputComponent.storedValueUnreadable`. Anything
+ * narrower would have this renderer quietly erase data it simply cannot display yet.
+ */
+declare function mediaFieldRenderer(overrides?: Partial<MediaFieldConfig>): ErasedFieldRendererDescriptor;
 declare function dateFieldRenderer(overrides?: Partial<DateFieldConfig>): ErasedFieldRendererDescriptor;
 
 /**
@@ -2208,7 +2432,7 @@ declare class FieldValueComponent {
     private committedValue;
     private readonly descriptor;
     private readonly kind;
-    /** Parsed only for the one display decision that needs it — see {@link isUrl}. A `computed` so
+    /** Parsed only for the display decision that needs it — see {@link isRichText}. A `computed` so
         its identity is stable, matching the reason `FieldInputComponent` does the same. */
     private readonly config;
     readonly canEdit: _angular_core.Signal<boolean>;
@@ -2223,6 +2447,13 @@ declare class FieldValueComponent {
      * implementor — the same reasoning that keeps four table-only members off a data point column.
      */
     readonly isUrl: _angular_core.Signal<boolean>;
+    /**
+     * Whether the value is the HTML a `wysiwyg` textarea stores, read as formatted text rather than
+     * as {@link displayText}'s tag-stripped plain form. Rendered through `[innerHTML]`, which
+     * Angular sanitizes on the way in.
+     */
+    readonly isRichText: _angular_core.Signal<boolean>;
+    readonly richTextHtml: _angular_core.Signal<string>;
     /** The full address, for `href` and for the tooltip. Never the elided form. */
     readonly href: _angular_core.Signal<string>;
     readonly linkText: _angular_core.Signal<string>;
@@ -2250,5 +2481,5 @@ declare class FieldValueComponent {
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldValueComponent, "vcr-field-value", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "readonly": { "alias": "readonly"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "committed": "committed"; }, never, never, true, never>;
 }
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, eraseFieldRenderer, findFieldRenderer, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textareaFieldRenderer, toFieldConfigJson };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, findFieldRenderer, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml };
 export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldControlOrigin, FieldControlSource, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, ResolvedFieldControl, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };

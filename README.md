@@ -15,12 +15,12 @@ the same field in two apps. The one exception is `/ui`, which carries a service 
 ## Install
 
 ```bash
-npm install git+https://github.com/MaleBug/velocity-core-renderer.git#v0.6.0
+npm install git+https://github.com/MaleBug/velocity-core-renderer.git#v0.8.0
 ```
 
 ```json
 "dependencies": {
-  "velocity-core-renderer": "git+https://github.com/MaleBug/velocity-core-renderer.git#v0.6.0"
+  "velocity-core-renderer": "git+https://github.com/MaleBug/velocity-core-renderer.git#v0.8.0"
 }
 ```
 
@@ -35,7 +35,7 @@ Pin a tag. Tags here are immutable: a fix ships as a new version, never as a mov
 
 | Package                                              | Range     |
 | ---------------------------------------------------- | --------- |
-| `@angular/common`, `@angular/core`, `@angular/forms` | `^21.2.0` |
+| `@angular/common`, `@angular/core`, `@angular/forms`, `@angular/platform-browser` | `^21.2.0` |
 | `primeng`                                            | `^21.1.6` |
 | `primeicons`                                         | `^7.0.0`  |
 
@@ -121,23 +121,36 @@ backend has always stored. Lowercase spellings have never existed on the wire.
 Deliberately not headed with a version number: this table went stale the moment one was written
 into it, and the release notes are a better place to ask "since when".
 
-| Field type                      | Control                                         |
-| ------------------------------- | ----------------------------------------------- |
-| `Text`, `Email`, `Phone`, `Url` | PrimeNG text input, typed per variant           |
-| `Number`, `Decimal`             | `p-inputnumber`, seeded per variant             |
-| `Checkbox`                      | `p-checkbox` — one box, or a group of them      |
-| `RadioButton`                   | `p-radiobutton`                                 |
-| `Dropdown`                      | `p-select`, or `p-multiselect` in Multiple mode |
-| `DatePicker`                    | `p-datepicker`                                  |
-| everything else                 | plain `<textarea>` fallback                     |
+| Field type                      | Control                                                     |
+| ------------------------------- | ----------------------------------------------------------- |
+| `Text`                          | PrimeNG text input, typed per Input Type (text, tel, url…)  |
+| `TextArea`                      | `pTextarea`, or a rich-text box when `wysiwyg` is on (below) |
+| `Number`, `Decimal`             | `p-inputnumber`, seeded per variant                         |
+| `Currency`                      | `p-inputnumber` in currency mode                            |
+| `Checkbox`                      | `p-checkbox` — one box, or a group of them                  |
+| `RadioButton`                   | `p-radiobutton`, or a button track with `buttonType`        |
+| `Dropdown`                      | `p-select`, or `p-multiselect` in Multiple mode             |
+| `DatePicker`                    | `p-datepicker`                                              |
+| `Media`                         | a placeholder glyph that edits nothing                      |
+| everything else                 | plain `<textarea>` fallback                                 |
+
+**`TextArea` with `wysiwyg: true`** draws a `contenteditable` box with five buttons — bold, italic,
+underline, bulleted list, numbered list — and stores sanitized HTML. A plain value saved before the
+flag was turned on opens with its line breaks kept. `formatFieldValue` reads the HTML back as plain
+text (for grids and `valueFormatted`); `vcr-field-value` shows it formatted.
+
+**`Media`** is registered so a facade never falls back to a raw textarea for it, but it is a
+placeholder until the media picker moves here. `isPackageEditableFieldType` leaves it out, which
+is what an author choosing a data point control should be offered.
 
 Retired wire types are registered too, so a field already saved under one keeps its renderer:
 `Date` and `DateTime` draw the date picker, `Boolean`, `MultiSelect` and `CheckboxGroup` draw
-checkboxes, and **`Select` draws radios** — it predates `Dropdown`, and repointing it would change
+checkboxes, `Email`, `Url` and `Phone` draw the text input seeded with their input type (a new
+link or phone field is `Text` with Input Type URL or Phone, and `isUrlField` answers "is this
+a link?" for both `Url` and Text + URL), and **`Select` draws radios** — it predates `Dropdown`, and repointing it would change
 what every field already saved as a `Select` draws.
 
-The fallback is deliberate, not an error state — an unregistered type stays editable. Three further
-renderers (textarea, currency, media) exist in the admin app and have not been extracted yet.
+The fallback is deliberate, not an error state — an unregistered type stays editable.
 
 `findFieldRenderer(fieldType)` returns `null` for an unregistered type, and
 `isFieldRendererRegistered(fieldType)` answers the same question as a boolean.
@@ -172,6 +185,10 @@ const slug = textFieldRenderer({ placeholder: 'my-page-slug' });
 
 Page-widget types (`DataTable`, `EsriMap`) are deliberately never registered here — nothing in this
 package can draw one.
+
+Config editors are not here either: they are authoring UI, and the admin app pairs each renderer
+kind with its editor (`FIELD_CONFIG_EDITORS`). To add or move a renderer, follow
+`docs/renderer-process.md` in the source repo.
 
 ## Source and releases
 

@@ -21,10 +21,10 @@
 /**
  * The types that hold a value and have a typed renderer.
  *
- * `Text`/`Phone`/`Url` share the text renderer, `Number`/`Decimal` the number one — the
+ * `Text` is the one text-renderer type still offered, `Number`/`Decimal` the number one — the
  * split lives in the registry, not here.
  */
-type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 'Checkbox' | 'DatePicker' | 'Phone' | 'Url' | 'RadioButton' | 'Dropdown' | 'Media';
+type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 'Checkbox' | 'DatePicker' | 'RadioButton' | 'Dropdown' | 'Media';
 /**
  * The types that place a page-level widget rather than a field value.
  *
@@ -40,7 +40,7 @@ type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 
  * composed ahead of the widgets being built, and each grows a config the day it has a setting
  * worth authoring.
  */
-type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'CustomObjectDataPoint' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'Tasks' | 'Contacts';
+type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'Timeline' | 'Notice' | 'NoticeList' | 'CustomObjectDataPoint' | 'CustomObjectDataPointMultiple' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'AddLeaseAdHocChargesRecordDialog' | 'AddLeaseCriticalScheduleRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'LeaseDocument' | 'Tasks' | 'Contacts';
 /**
  * Types no longer offered in the admin's menu, but still held by fields saved before they were
  * withdrawn.
@@ -58,12 +58,16 @@ type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilte
  * - `Email` -> `Text`, which draws the same plain text box minus the email keyboard hint and
  *   browser validation `inputType: 'email'` gave it — not offered as a `Text` Input Type option
  *   either, since it was never meant as a setting to pick, only a fact about the retired type.
+ * - `Url` -> `Text` with Input Type URL, which is the same control: `Url` was only ever the text
+ *   renderer seeded with `inputType: 'url'`, and a `Url` field could have that switched off.
+ * - `Phone` -> `Text` with Input Type Phone, for the same reason: it was the text renderer seeded
+ *   with `inputType: 'tel'`, and the phone mask lives on that input type, not on the field type.
  *
  * **All of them stay registered** even though none is offered: a field's type cannot be changed
  * once saved, so dropping them would strip the editor from every such field already in an account
  * and leave it editing raw JSON.
  */
-type RetiredFieldDefinitionType = 'Date' | 'DateTime' | 'Select' | 'MultiSelect' | 'Boolean' | 'CheckboxGroup' | 'Email';
+type RetiredFieldDefinitionType = 'Date' | 'DateTime' | 'Select' | 'MultiSelect' | 'Boolean' | 'CheckboxGroup' | 'Email' | 'Url' | 'Phone';
 /** Every `fieldType` the admin can write — offered or retired, value or widget. */
 type FieldDefinitionType = FieldValueType | PageWidgetType | RetiredFieldDefinitionType;
 /**
@@ -93,7 +97,11 @@ declare const FieldDefinitionTypes: {
     readonly DataTableFilter: "DataTableFilter";
     readonly DataTablePageHeader: "DataTablePageHeader";
     readonly Metric: "Metric";
+    readonly Timeline: "Timeline";
+    readonly Notice: "Notice";
+    readonly NoticeList: "NoticeList";
     readonly CustomObjectDataPoint: "CustomObjectDataPoint";
+    readonly CustomObjectDataPointMultiple: "CustomObjectDataPointMultiple";
     readonly EsriMapV3: "EsriMapV3";
     readonly GoogleMap: "GoogleMap";
     readonly MiniMap: "MiniMap";
@@ -105,10 +113,13 @@ declare const FieldDefinitionTypes: {
     readonly AddLeaseDialog: "AddLeaseDialog";
     readonly AddSimpleRecordDialog: "AddSimpleRecordDialog";
     readonly AddLeaseRecordDialog: "AddLeaseRecordDialog";
+    readonly AddLeaseAdHocChargesRecordDialog: "AddLeaseAdHocChargesRecordDialog";
+    readonly AddLeaseCriticalScheduleRecordDialog: "AddLeaseCriticalScheduleRecordDialog";
     readonly Notes: "Notes";
     readonly SitePlan: "SitePlan";
     readonly Gallery: "Gallery";
     readonly Documents: "Documents";
+    readonly LeaseDocument: "LeaseDocument";
     readonly Tasks: "Tasks";
     readonly Contacts: "Contacts";
     readonly Date: "Date";
@@ -197,6 +208,18 @@ declare const PACKAGE_RENDERED_FIELD_TYPES: readonly FieldDefinitionType[];
 /** Whether this package can draw a control for `fieldType`. Takes a plain `string` for the same
     reason {@link retiredFieldTypeLabel} does — every caller has one off the wire. */
 declare function isPackageRenderedFieldType(fieldType: string): boolean;
+/**
+ * Registered types whose renderer draws a placeholder and edits nothing — today only `Media`,
+ * until the media picker itself moves into the package.
+ *
+ * Listed in {@link PACKAGE_RENDERED_FIELD_TYPES}, because the package does draw them and a facade
+ * must not fall back to a raw textarea for one. Kept out of {@link isPackageEditableFieldType},
+ * because offering one as a data point control would give the client a field nobody can fill in.
+ */
+declare const PLACEHOLDER_FIELD_TYPES: readonly FieldDefinitionType[];
+/** Whether this package draws a control for `fieldType` that can actually set its value — what
+    an author choosing a data point control should be offered. */
+declare function isPackageEditableFieldType(fieldType: string): boolean;
 
-export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageRenderedFieldType, retiredFieldTypeLabel };
+export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, PLACEHOLDER_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageEditableFieldType, isPackageRenderedFieldType, retiredFieldTypeLabel };
 export type { FieldDefinitionType, FieldValueType, PageWidgetType, RetiredFieldDefinitionType };

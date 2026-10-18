@@ -45,7 +45,11 @@ const FieldDefinitionTypes = {
     DataTableFilter: 'DataTableFilter',
     DataTablePageHeader: 'DataTablePageHeader',
     Metric: 'Metric',
+    Timeline: 'Timeline',
+    Notice: 'Notice',
+    NoticeList: 'NoticeList',
     CustomObjectDataPoint: 'CustomObjectDataPoint',
+    CustomObjectDataPointMultiple: 'CustomObjectDataPointMultiple',
     EsriMapV3: 'EsriMapV3',
     GoogleMap: 'GoogleMap',
     MiniMap: 'MiniMap',
@@ -57,10 +61,13 @@ const FieldDefinitionTypes = {
     AddLeaseDialog: 'AddLeaseDialog',
     AddSimpleRecordDialog: 'AddSimpleRecordDialog',
     AddLeaseRecordDialog: 'AddLeaseRecordDialog',
+    AddLeaseAdHocChargesRecordDialog: 'AddLeaseAdHocChargesRecordDialog',
+    AddLeaseCriticalScheduleRecordDialog: 'AddLeaseCriticalScheduleRecordDialog',
     Notes: 'Notes',
     SitePlan: 'SitePlan',
     Gallery: 'Gallery',
     Documents: 'Documents',
+    LeaseDocument: 'LeaseDocument',
     Tasks: 'Tasks',
     Contacts: 'Contacts',
     Date: 'Date',
@@ -106,8 +113,6 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Currency', value: 'Currency' },
     { label: 'Checkbox', value: 'Checkbox' },
     { label: 'Date Picker', value: 'DatePicker' },
-    { label: 'Phone', value: 'Phone' },
-    { label: 'URL', value: 'Url' },
     { label: 'Radio Button', value: 'RadioButton' },
     { label: 'Dropdown', value: 'Dropdown' },
     { label: 'Media', value: 'Media' },
@@ -117,7 +122,11 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Data Table Filter', value: 'DataTableFilter' },
     { label: 'Data Table Page Header', value: 'DataTablePageHeader' },
     { label: 'Metric', value: 'Metric' },
+    { label: 'Timeline', value: 'Timeline' },
+    { label: 'Notice', value: 'Notice' },
+    { label: 'Notice List', value: 'NoticeList' },
     { label: 'Custom Object Data Point', value: 'CustomObjectDataPoint' },
+    { label: 'Custom Object Data Point Multiple', value: 'CustomObjectDataPointMultiple' },
     { label: 'Esri Map V3', value: 'EsriMapV3' },
     { label: 'Google Map', value: 'GoogleMap' },
     { label: 'Mini Map', value: 'MiniMap' },
@@ -129,10 +138,13 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Add Lease Dialog', value: 'AddLeaseDialog' },
     { label: 'Add Simple Record Dialog', value: 'AddSimpleRecordDialog' },
     { label: 'Add Lease Record Dialog', value: 'AddLeaseRecordDialog' },
+    { label: 'Add Lease Ad Hoc Charges Record Dialog', value: 'AddLeaseAdHocChargesRecordDialog' },
+    { label: 'Add Lease Critical Schedule Record Dialog', value: 'AddLeaseCriticalScheduleRecordDialog' },
     { label: 'Notes', value: 'Notes' },
     { label: 'Site Plan', value: 'SitePlan' },
     { label: 'Gallery', value: 'Gallery' },
     { label: 'Documents', value: 'Documents' },
+    { label: 'Lease Document', value: 'LeaseDocument' },
     { label: 'Tasks', value: 'Tasks' },
     { label: 'Contacts', value: 'Contacts' },
 ];
@@ -155,6 +167,8 @@ const RETIRED_FIELD_TYPE_LABELS = {
     Boolean: 'Boolean (retired — use Checkbox)',
     CheckboxGroup: 'Checkbox Group (retired — use Checkbox)',
     Email: 'Email (retired — use Text)',
+    Url: 'URL (retired — use Text)',
+    Phone: 'Phone (retired — use Text)',
 };
 /**
  * The retired-menu label for `fieldType`, or null if it is not a retired type.
@@ -193,8 +207,6 @@ const DEFAULT_FIELD_TYPE = FieldDefinitionTypes.Text;
  */
 const PACKAGE_RENDERED_FIELD_TYPES = [
     'Text',
-    'Phone',
-    'Url',
     'Number',
     'Decimal',
     'Currency',
@@ -203,6 +215,7 @@ const PACKAGE_RENDERED_FIELD_TYPES = [
     'DatePicker',
     'RadioButton',
     'Dropdown',
+    'Media',
     // Retired, registered so an existing field of one keeps its renderer. See
     // `RETIRED_FIELD_TYPE_LABELS`.
     'Date',
@@ -212,11 +225,28 @@ const PACKAGE_RENDERED_FIELD_TYPES = [
     'MultiSelect',
     'CheckboxGroup',
     'Email',
+    'Url',
+    'Phone',
 ];
 /** Whether this package can draw a control for `fieldType`. Takes a plain `string` for the same
     reason {@link retiredFieldTypeLabel} does — every caller has one off the wire. */
 function isPackageRenderedFieldType(fieldType) {
     return PACKAGE_RENDERED_FIELD_TYPES.includes(fieldType);
+}
+/**
+ * Registered types whose renderer draws a placeholder and edits nothing — today only `Media`,
+ * until the media picker itself moves into the package.
+ *
+ * Listed in {@link PACKAGE_RENDERED_FIELD_TYPES}, because the package does draw them and a facade
+ * must not fall back to a raw textarea for one. Kept out of {@link isPackageEditableFieldType},
+ * because offering one as a data point control would give the client a field nobody can fill in.
+ */
+const PLACEHOLDER_FIELD_TYPES = ['Media'];
+/** Whether this package draws a control for `fieldType` that can actually set its value — what
+    an author choosing a data point control should be offered. */
+function isPackageEditableFieldType(fieldType) {
+    return (isPackageRenderedFieldType(fieldType) &&
+        !PLACEHOLDER_FIELD_TYPES.includes(fieldType));
 }
 
 /*
@@ -234,5 +264,5 @@ function isPackageRenderedFieldType(fieldType) {
  * Generated bundle index. Do not edit.
  */
 
-export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageRenderedFieldType, retiredFieldTypeLabel };
+export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, PLACEHOLDER_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageEditableFieldType, isPackageRenderedFieldType, retiredFieldTypeLabel };
 //# sourceMappingURL=velocity-core-renderer-vocabulary.mjs.map
