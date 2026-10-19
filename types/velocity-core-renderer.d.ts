@@ -809,22 +809,18 @@ type TextInputType = (typeof TEXT_INPUT_TYPES)[number];
 /**
  * What the Input Type menu offers.
  *
- * `'email'` is a valid {@link TextInputType} and deliberately not on this list: the `Email` field
- * type seeds it, so for such a field it is a fact about what the field *is* rather than a setting
- * to pick — and picking it on a `Text` field only duplicated a type the dropdown one tab over
- * already offers.
- *
- * A saved config still holds it, and `TextFieldConfigComponent` adds it back to the menu for the
- * field that holds it — see {@link RETIRED_TEXT_INPUT_TYPE_LABELS}.
+ * `'email'` and `'url'` also turn on format validation — see `textValueFormatError`. Email was
+ * once left off this list as a duplicate of the `Email` field type; with that type retired in
+ * favour of `Text`, this menu is the only way to ask for an email field, so it is back.
  */
 declare const TEXT_INPUT_TYPE_OPTIONS: ConfigSelectOption<TextInputType>[];
 /**
- * Names for the input types no longer on the menu above.
+ * Names for input types no longer on the menu above, so a saved config holding one still shows it.
  *
- * A `p-select` renders nothing for a value none of its options carry, so without this an `Email`
- * field would open showing an empty Input Type. The value was never at risk — only the user
- * seeing a blank where their field's type should be. Mirrors `RETIRED_FIELD_TYPE_LABELS`, which
- * does the same for the Type menu on the Metadata tab.
+ * A `p-select` renders nothing for a value none of its options carry, so without this a field
+ * holding a retired input type would open showing an empty Input Type. Empty while every type is
+ * offered; kept as the place to put one if a type is retired again. Mirrors
+ * `RETIRED_FIELD_TYPE_LABELS`, which does the same for the Type menu on the Metadata tab.
  */
 declare const RETIRED_TEXT_INPUT_TYPE_LABELS: Partial<Record<TextInputType, string>>;
 /**
@@ -1421,6 +1417,20 @@ declare function toRichTextHtml(value: string): string;
  */
 declare function richTextToPlainText(html: string): string;
 
+declare const INVALID_EMAIL_MESSAGE = "Enter a valid email address, e.g. name@example.com.";
+declare const INVALID_URL_MESSAGE = "Enter a valid web address, e.g. https://example.com.";
+/**
+ * Why a text value does not fit its input type, or `null` when it does.
+ *
+ * Only `'email'` and `'url'` have a format to check; every other type accepts any string. Empty
+ * is always valid — whether a value is needed at all is `required`'s job, not this one's.
+ *
+ * Lives here rather than in the renderer so a form can block a save on the same rule the control
+ * shows its message for: the renderer draws the message, the consumer's validator calls this.
+ * See `fieldValueFormatError` for the version that starts from a field definition.
+ */
+declare function textValueFormatError(inputType: TextInputType, value: string | null | undefined): string | null;
+
 /**
  * Draws a single-line text field.
  *
@@ -1512,10 +1522,25 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
      * browser decide, and for a password field naming an input mode would be second-guessing it.
      */
     readonly inputMode: _angular_core.Signal<string | null>;
+    /** Whether the user is in the control right now. See {@link formatErrorShown}. */
+    private readonly focused;
+    /** Why the value does not fit an Email or URL input type, or `null` while it does. The same rule
+        a consumer's form validates with — see `textValueFormatError`. */
+    readonly formatError: _angular_core.Signal<string | null>;
+    /**
+     * Whether to show {@link formatError}: only while the user is not typing in the control.
+     *
+     * Every half-typed address is invalid, so a message that appears on the first keystroke is noise
+     * until the user has finished. Leaving the control reveals it; a value that arrives already
+     * invalid (a saved one, opened for edit) shows it straight away, since nobody is typing.
+     */
+    readonly formatErrorShown: _angular_core.Signal<boolean>;
     /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     /** `p-inputmask` emits null for a cleared control; the wire value for text is `''`. */
     onValueChange(next: string | null): void;
+    onFocus(): void;
+    onBlur(): void;
     clear(): void;
     /**
      * One edge's value, but only when that edge is in the mode asked for.
@@ -2164,6 +2189,15 @@ declare function isFieldRendererRegistered(fieldType: string): boolean;
  */
 declare function isUrlField(fieldType: string, fieldConfig: string | null): boolean;
 /**
+ * Why a value does not fit its field's format, or `null` when it does — today, a text field whose
+ * Input Type is Email or URL. See `textValueFormatError` for the rules.
+ *
+ * Read off the config like {@link isUrlField}, so a retired `Email`/`Url` field is checked through
+ * the input type its seed sets. For a form to block a save on: the renderer shows the same message
+ * itself, so a consumer only needs this as a validator, not as a hint of its own.
+ */
+declare function fieldValueFormatError(fieldType: string, fieldConfig: string | null, value: string): string | null;
+/**
  * A stored value as it should be *read* — the string to show where a control is not being drawn,
  * and the `valueFormatted` to send beside `value` on a save.
  *
@@ -2481,5 +2515,5 @@ declare class FieldValueComponent {
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldValueComponent, "vcr-field-value", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "readonly": { "alias": "readonly"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "committed": "committed"; }, never, never, true, never>;
 }
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, findFieldRenderer, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, fieldValueFormatError, findFieldRenderer, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml };
 export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldControlOrigin, FieldControlSource, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, ResolvedFieldControl, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };

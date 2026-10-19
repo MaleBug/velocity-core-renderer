@@ -62,6 +62,7 @@ const FieldDefinitionTypes = {
     AddSimpleRecordDialog: 'AddSimpleRecordDialog',
     AddLeaseRecordDialog: 'AddLeaseRecordDialog',
     AddLeaseAdHocChargesRecordDialog: 'AddLeaseAdHocChargesRecordDialog',
+    AddLeaseScheduledBasePaymentsRecordDialog: 'AddLeaseScheduledBasePaymentsRecordDialog',
     AddLeaseCriticalScheduleRecordDialog: 'AddLeaseCriticalScheduleRecordDialog',
     Notes: 'Notes',
     SitePlan: 'SitePlan',
@@ -139,6 +140,10 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Add Simple Record Dialog', value: 'AddSimpleRecordDialog' },
     { label: 'Add Lease Record Dialog', value: 'AddLeaseRecordDialog' },
     { label: 'Add Lease Ad Hoc Charges Record Dialog', value: 'AddLeaseAdHocChargesRecordDialog' },
+    {
+        label: 'Add Lease Scheduled Base Payments Record Dialog',
+        value: 'AddLeaseScheduledBasePaymentsRecordDialog',
+    },
     { label: 'Add Lease Critical Schedule Record Dialog', value: 'AddLeaseCriticalScheduleRecordDialog' },
     { label: 'Notes', value: 'Notes' },
     { label: 'Site Plan', value: 'SitePlan' },

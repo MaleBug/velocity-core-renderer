@@ -40,7 +40,7 @@ type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 
  * composed ahead of the widgets being built, and each grows a config the day it has a setting
  * worth authoring.
  */
-type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'Timeline' | 'Notice' | 'NoticeList' | 'CustomObjectDataPoint' | 'CustomObjectDataPointMultiple' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'AddLeaseAdHocChargesRecordDialog' | 'AddLeaseCriticalScheduleRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'LeaseDocument' | 'Tasks' | 'Contacts';
+type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'Timeline' | 'Notice' | 'NoticeList' | 'CustomObjectDataPoint' | 'CustomObjectDataPointMultiple' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'AddLeaseAdHocChargesRecordDialog' | 'AddLeaseScheduledBasePaymentsRecordDialog' | 'AddLeaseCriticalScheduleRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'LeaseDocument' | 'Tasks' | 'Contacts';
 /**
  * Types no longer offered in the admin's menu, but still held by fields saved before they were
  * withdrawn.
@@ -114,6 +114,7 @@ declare const FieldDefinitionTypes: {
     readonly AddSimpleRecordDialog: "AddSimpleRecordDialog";
     readonly AddLeaseRecordDialog: "AddLeaseRecordDialog";
     readonly AddLeaseAdHocChargesRecordDialog: "AddLeaseAdHocChargesRecordDialog";
+    readonly AddLeaseScheduledBasePaymentsRecordDialog: "AddLeaseScheduledBasePaymentsRecordDialog";
     readonly AddLeaseCriticalScheduleRecordDialog: "AddLeaseCriticalScheduleRecordDialog";
     readonly Notes: "Notes";
     readonly SitePlan: "SitePlan";
