@@ -39,6 +39,7 @@ const FieldDefinitionTypes = {
     RadioButton: 'RadioButton',
     Dropdown: 'Dropdown',
     Media: 'Media',
+    Calculated: 'Calculated',
     BasicTable: 'basic-table',
     DataTable: 'DataTable',
     DataList: 'DataList',
@@ -69,6 +70,7 @@ const FieldDefinitionTypes = {
     Gallery: 'Gallery',
     Documents: 'Documents',
     LeaseDocument: 'LeaseDocument',
+    AbstractSummary: 'AbstractSummary',
     Tasks: 'Tasks',
     Contacts: 'Contacts',
     Date: 'Date',
@@ -98,7 +100,8 @@ const FieldDefinitionTypes = {
  * The seven retired values are deliberately absent, and are named in
  * {@link RETIRED_FIELD_TYPE_LABELS} instead.
  *
- * Twelve of these have a typed renderer: {@link FieldValueType}. The rest are
+ * The {@link FieldValueType}s hold a value, and all of them but `Calculated` have a typed
+ * renderer. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
  * touching them, and configured in the admin by a dedicated component each except `Notes`,
  * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.
@@ -117,6 +120,7 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Radio Button', value: 'RadioButton' },
     { label: 'Dropdown', value: 'Dropdown' },
     { label: 'Media', value: 'Media' },
+    { label: 'Calculated Fields', value: 'Calculated' },
     { label: 'Basic Table', value: 'basic-table' },
     { label: 'Data Table', value: 'DataTable' },
     { label: 'Data List', value: 'DataList' },
@@ -150,6 +154,7 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Gallery', value: 'Gallery' },
     { label: 'Documents', value: 'Documents' },
     { label: 'Lease Document', value: 'LeaseDocument' },
+    { label: 'Abstract Summary', value: 'AbstractSummary' },
     { label: 'Tasks', value: 'Tasks' },
     { label: 'Contacts', value: 'Contacts' },
 ];

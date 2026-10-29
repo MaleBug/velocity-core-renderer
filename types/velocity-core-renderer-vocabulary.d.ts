@@ -19,12 +19,16 @@
  * keyed by the kind.
  */
 /**
- * The types that hold a value and have a typed renderer.
+ * The types that hold a value. All but `Calculated` have a typed renderer.
  *
  * `Text` is the one text-renderer type still offered, `Number`/`Decimal` the number one — the
  * split lives in the registry, not here.
+ *
+ * `Calculated` holds a value nobody types: its config carries an expression (see the
+ * `/expression` entry point) over other fields, and the client works the value out and saves it.
+ * It has no renderer here because reading those other fields needs the client's page state.
  */
-type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 'Checkbox' | 'DatePicker' | 'RadioButton' | 'Dropdown' | 'Media';
+type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 'Checkbox' | 'DatePicker' | 'RadioButton' | 'Dropdown' | 'Media' | 'Calculated';
 /**
  * The types that place a page-level widget rather than a field value.
  *
@@ -40,7 +44,7 @@ type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 
  * composed ahead of the widgets being built, and each grows a config the day it has a setting
  * worth authoring.
  */
-type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'Timeline' | 'Notice' | 'NoticeList' | 'CustomObjectDataPoint' | 'CustomObjectDataPointMultiple' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'AddLeaseAdHocChargesRecordDialog' | 'AddLeaseScheduledBasePaymentsRecordDialog' | 'AddLeaseCriticalScheduleRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'LeaseDocument' | 'Tasks' | 'Contacts';
+type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'Timeline' | 'Notice' | 'NoticeList' | 'CustomObjectDataPoint' | 'CustomObjectDataPointMultiple' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'AddLeaseAdHocChargesRecordDialog' | 'AddLeaseScheduledBasePaymentsRecordDialog' | 'AddLeaseCriticalScheduleRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'LeaseDocument' | 'AbstractSummary' | 'Tasks' | 'Contacts';
 /**
  * Types no longer offered in the admin's menu, but still held by fields saved before they were
  * withdrawn.
@@ -91,6 +95,7 @@ declare const FieldDefinitionTypes: {
     readonly RadioButton: "RadioButton";
     readonly Dropdown: "Dropdown";
     readonly Media: "Media";
+    readonly Calculated: "Calculated";
     readonly BasicTable: "basic-table";
     readonly DataTable: "DataTable";
     readonly DataList: "DataList";
@@ -121,6 +126,7 @@ declare const FieldDefinitionTypes: {
     readonly Gallery: "Gallery";
     readonly Documents: "Documents";
     readonly LeaseDocument: "LeaseDocument";
+    readonly AbstractSummary: "AbstractSummary";
     readonly Tasks: "Tasks";
     readonly Contacts: "Contacts";
     readonly Date: "Date";
@@ -150,7 +156,8 @@ declare const FieldDefinitionTypes: {
  * The seven retired values are deliberately absent, and are named in
  * {@link RETIRED_FIELD_TYPE_LABELS} instead.
  *
- * Twelve of these have a typed renderer: {@link FieldValueType}. The rest are
+ * The {@link FieldValueType}s hold a value, and all of them but `Calculated` have a typed
+ * renderer. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
  * touching them, and configured in the admin by a dedicated component each except `Notes`,
  * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.

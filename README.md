@@ -46,7 +46,7 @@ inputs render unstyled.
 
 ## Entry points
 
-There are three, and the split is load-bearing rather than cosmetic.
+There are four, and the split is load-bearing rather than cosmetic.
 
 ```ts
 // Everything: the renderers, the registry, the facade, the config codecs — and the vocabulary.
@@ -54,6 +54,9 @@ import { FieldInputComponent, findFieldRenderer } from 'velocity-core-renderer';
 
 // The field-type names alone. No Angular, no PrimeNG, no components.
 import { FieldDefinitionTypes, FIELD_TYPE_OPTIONS } from 'velocity-core-renderer/vocabulary';
+
+// The calculated-field expression language: parse, check and evaluate. No Angular, no PrimeNG.
+import { parseCalculation, evaluateCalculation } from 'velocity-core-renderer/expression';
 
 // List-screen chrome: the page header, and the toast service behind it.
 import { VcrPageHeaderComponent, VcrToastService } from 'velocity-core-renderer/ui';

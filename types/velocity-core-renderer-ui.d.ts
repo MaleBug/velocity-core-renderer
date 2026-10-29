@@ -61,4 +61,115 @@ declare class VcrToastService {
     static ɵprov: _angular_core.ɵɵInjectableDeclaration<VcrToastService>;
 }
 
-export { VCR_TOAST_DEFAULT_LIFE, VCR_TOAST_ERROR_LIFE, VcrPageHeaderComponent, VcrToastService };
+/**
+ * One row nested under an abstract clause detail.
+ *
+ * A detail point is the third level of a template: clause, then detail, then the points that
+ * belong to that detail.
+ */
+interface AbstractClauseDetailPoint {
+    id: string;
+    label: string;
+}
+/**
+ * One row of an abstract clause card.
+ *
+ * `points` are drawn indented beneath this row. A detail with none is a single row.
+ */
+interface AbstractClauseDetail {
+    id: string;
+    label: string;
+    points: AbstractClauseDetailPoint[];
+}
+/**
+ * One card in an abstract summary.
+ *
+ * `name` is the card heading (for example "Alterations"). `details` are its rows.
+ */
+interface AbstractClause {
+    id: string;
+    name: string;
+    details: AbstractClauseDetail[];
+}
+/**
+ * Clauses to draw for `search`.
+ *
+ * A blank search returns `clauses` unchanged. Otherwise a clause is kept when its name matches,
+ * or when one of its details or points does. A matching clause name keeps every detail. A matching
+ * detail keeps every point. A matching point keeps only that point under its detail.
+ */
+declare function visibleAbstractClauses(clauses: AbstractClause[], search: string): AbstractClause[];
+
+/**
+ * The toolbar above an abstract summary's clause cards.
+ *
+ * Search on the left, then Add Clause. On the right, the selected template's name and Export
+ * Abstracts. No template name draws "No Template Selected" in place of the name pill. This is the
+ * bar inside the summary, not the page tabs around it.
+ */
+declare class VcrAbstractSummaryHeaderComponent {
+    /** Two-way, so the summary can filter its cards from the same value the input shows. */
+    readonly search: _angular_core.ModelSignal<string>;
+    /** Null when the reader has not chosen a template yet. */
+    readonly templateName: _angular_core.InputSignal<string | null>;
+    readonly addClause: _angular_core.OutputEmitterRef<void>;
+    readonly exportAbstracts: _angular_core.OutputEmitterRef<void>;
+    readonly selectTemplate: _angular_core.OutputEmitterRef<void>;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<VcrAbstractSummaryHeaderComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<VcrAbstractSummaryHeaderComponent, "vcr-abstract-summary-header", never, { "search": { "alias": "search"; "required": false; "isSignal": true; }; "templateName": { "alias": "templateName"; "required": false; "isSignal": true; }; }, { "search": "searchChange"; "addClause": "addClause"; "exportAbstracts": "exportAbstracts"; "selectTemplate": "selectTemplate"; }, never, never, true, never>;
+}
+
+/** Which row an edit or copy action belongs to. */
+interface AbstractClauseRowRef {
+    clauseId: string;
+    detailId: string;
+    pointId: string | null;
+}
+/**
+ * One abstract clause, drawn as a card.
+ *
+ * The heading is the clause. Each detail is a row, and that detail's points are the indented
+ * rows beneath it. The chevron folds the rows away; they start open.
+ */
+declare class VcrAbstractClauseCardComponent {
+    readonly clause: _angular_core.InputSignal<AbstractClause>;
+    readonly addDataPoint: _angular_core.OutputEmitterRef<string>;
+    readonly editRow: _angular_core.OutputEmitterRef<AbstractClauseRowRef>;
+    readonly copyRow: _angular_core.OutputEmitterRef<AbstractClauseRowRef>;
+    readonly expanded: _angular_core.WritableSignal<boolean>;
+    toggle(): void;
+    detailRef(detail: AbstractClauseDetail): AbstractClauseRowRef;
+    pointRef(detail: AbstractClauseDetail, point: AbstractClauseDetailPoint): AbstractClauseRowRef;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<VcrAbstractClauseCardComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<VcrAbstractClauseCardComponent, "vcr-abstract-clause-card", never, { "clause": { "alias": "clause"; "required": true; "isSignal": true; }; }, { "addDataPoint": "addDataPoint"; "editRow": "editRow"; "copyRow": "copyRow"; }, never, never, true, never>;
+}
+
+/**
+ * The abstract summary panel a page places inside one of its own tabs.
+ *
+ * The header is search, Add Clause, the template name and Export Abstracts. Below it, each
+ * abstract clause is a card, each clause detail is a row, and each detail's points are the
+ * indented rows under that detail. With no template selected, the cards are replaced by the
+ * prompt to choose one.
+ *
+ * The host supplies the template. Abstract templates are custom-object records; which object
+ * those records come from is not chosen here yet.
+ */
+declare class VcrAbstractSummaryComponent {
+    readonly templateName: _angular_core.InputSignal<string | null>;
+    readonly clauses: _angular_core.InputSignal<AbstractClause[]>;
+    readonly search: _angular_core.ModelSignal<string>;
+    readonly addClause: _angular_core.OutputEmitterRef<void>;
+    readonly exportAbstracts: _angular_core.OutputEmitterRef<void>;
+    readonly selectTemplate: _angular_core.OutputEmitterRef<void>;
+    readonly addDataPoint: _angular_core.OutputEmitterRef<string>;
+    readonly editRow: _angular_core.OutputEmitterRef<AbstractClauseRowRef>;
+    readonly copyRow: _angular_core.OutputEmitterRef<AbstractClauseRowRef>;
+    readonly visibleClauses: _angular_core.Signal<AbstractClause[]>;
+    hasTemplate(): boolean;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<VcrAbstractSummaryComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<VcrAbstractSummaryComponent, "vcr-abstract-summary", never, { "templateName": { "alias": "templateName"; "required": false; "isSignal": true; }; "clauses": { "alias": "clauses"; "required": false; "isSignal": true; }; "search": { "alias": "search"; "required": false; "isSignal": true; }; }, { "search": "searchChange"; "addClause": "addClause"; "exportAbstracts": "exportAbstracts"; "selectTemplate": "selectTemplate"; "addDataPoint": "addDataPoint"; "editRow": "editRow"; "copyRow": "copyRow"; }, never, never, true, never>;
+}
+
+export { VCR_TOAST_DEFAULT_LIFE, VCR_TOAST_ERROR_LIFE, VcrAbstractClauseCardComponent, VcrAbstractSummaryComponent, VcrAbstractSummaryHeaderComponent, VcrPageHeaderComponent, VcrToastService, visibleAbstractClauses };
+export type { AbstractClause, AbstractClauseDetail, AbstractClauseDetailPoint, AbstractClauseRowRef };
