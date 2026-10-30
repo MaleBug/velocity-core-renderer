@@ -2564,7 +2564,8 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
  *
  * `appendTo="body"` because this renderer is used inside `p-dialog` on the page-content screen,
  * where an in-flow overlay would be clipped by the dialog — the same binding every `p-select` in
- * this app uses.
+ * this app uses. Except when `inline`: PrimeNG still moves an inline calendar to `appendTo`, which
+ * would land it at the foot of the page instead of where the field is, so it stays on `self`.
  *
  * Note there is no locale setting: `p-datepicker` has no `locale` input, and month and day names
  * come from PrimeNG's global translation, which `app.config.ts` does not configure. The config
@@ -2629,6 +2630,15 @@ class DateFieldInputComponent {
      *
      * Re-synced on blur so a value the field itself normalises — or one changed from elsewhere while
      * the input happened to be focused — still reaches the control.
+     *
+     * ## Same dates are not a new value
+     *
+     * A pick also comes back as an echo. `FieldInputComponent` serializes it to the wire string and
+     * deserializes that string straight back, so the same dates arrive here as fresh `Date` objects.
+     * `ngModel` would see a new value and write it, and `writeControlValue` calls `updateUI()`, which
+     * moves the calendar back to the month of the first selected date (the second, when there are
+     * exactly two). On a multiple or range calendar that sends the user away from the month they just
+     * picked in. So a value holding the same dates as the one bound is not written — see {@link sync}.
      */
     displayValue = signal(null, ...(ngDevMode ? [{ debugName: "displayValue" }] : /* istanbul ignore next */ []));
     constructor() {
@@ -2640,7 +2650,7 @@ class DateFieldInputComponent {
             if (untracked(this.editing)) {
                 return;
             }
-            this.displayValue.set(next);
+            this.sync(next);
         });
     }
     onFocus() {
@@ -2648,7 +2658,13 @@ class DateFieldInputComponent {
     }
     onBlur() {
         this.editing.set(false);
-        this.displayValue.set(this.value());
+        this.sync(this.value());
+    }
+    /** Binds `next` to the picker, unless it holds the same dates it already shows. */
+    sync(next) {
+        if (!sameDates(untracked(this.displayValue), next)) {
+            this.displayValue.set(next);
+        }
     }
     /**
      * Reads a date the picker's own parser cannot, for the formats that name no day.
@@ -2712,17 +2728,39 @@ class DateFieldInputComponent {
         const config = this.config();
         return config.restrictDateRange ? parseLocalDateish(config[member]) : null;
     }
-    /** `p-datepicker` emits undefined when cleared; null is this field's "no value". */
+    /**
+     * `p-datepicker` emits undefined when cleared; null is this field's "no value".
+     *
+     * Also recorded as {@link displayValue}, which is what the picker now holds — `ngModel` never
+     * writes back the value it just emitted, so this costs no repaint. It is what {@link sync}
+     * compares the echo against: effects run batched, so by the time one runs `value` already holds
+     * the facade's re-deserialized copy, and comparing that with the value from before the pick would
+     * find a change and move the calendar.
+     */
     onValueChange(next) {
+        this.displayValue.set(next ?? null);
         this.value.set(next ?? null);
     }
     static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: DateFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
-    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.2.0", version: "21.2.23", type: DateFieldInputComponent, isStandalone: true, selector: "vcr-date-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange" }, viewQueries: [{ propertyName: "picker", first: true, predicate: DatePicker, descendants: true, isSignal: true }], ngImport: i0, template: "<!-- Bound to `displayValue` rather than to `value` so the control's own text is not repainted\n     under the user while they are typing a date \u2014 see its doc. `ngModelChange` still reports\n     every keystroke, so the value this renderer publishes is unaffected. -->\n<p-datepicker\n  [inputId]=\"inputId()\"\n  [ngModel]=\"displayValue()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"onFocus()\"\n  (onBlur)=\"onBlur()\"\n  (onInput)=\"onTextInput($event)\"\n  [dateFormat]=\"config().dateFormat\"\n  [selectionMode]=\"config().selectionMode\"\n  [showTime]=\"config().showTime\"\n  [hourFormat]=\"config().hourFormat\"\n  [showSeconds]=\"config().showSeconds\"\n  [stepMinute]=\"config().stepMinute\"\n  [showIcon]=\"config().showIcon\"\n  [iconDisplay]=\"config().iconDisplay\"\n  [minDate]=\"minDate()\"\n  [maxDate]=\"maxDate()\"\n  [numberOfMonths]=\"effectiveNumberOfMonths()\"\n  [showButtonBar]=\"config().showButtonBar\"\n  [showClear]=\"config().showClear\"\n  [readonlyInput]=\"config().readonlyInput\"\n  [inline]=\"config().inline\"\n  [view]=\"effectiveView()\"\n  [placeholder]=\"config().placeholder\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  appendTo=\"body\"\n/>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep .p-datepicker,:host ::ng-deep input{width:100%}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: DatePicker, selector: "p-datePicker, p-datepicker, p-date-picker", inputs: ["iconDisplay", "styleClass", "inputStyle", "inputId", "inputStyleClass", "placeholder", "ariaLabelledBy", "ariaLabel", "iconAriaLabel", "dateFormat", "multipleSeparator", "rangeSeparator", "inline", "showOtherMonths", "selectOtherMonths", "showIcon", "icon", "readonlyInput", "shortYearCutoff", "hourFormat", "timeOnly", "stepHour", "stepMinute", "stepSecond", "showSeconds", "showOnFocus", "showWeek", "startWeekFromFirstDayOfYear", "showClear", "dataType", "selectionMode", "maxDateCount", "showButtonBar", "todayButtonStyleClass", "clearButtonStyleClass", "autofocus", "autoZIndex", "baseZIndex", "panelStyleClass", "panelStyle", "keepInvalid", "hideOnDateTimeSelect", "touchUI", "timeSeparator", "focusTrap", "showTransitionOptions", "hideTransitionOptions", "tabindex", "minDate", "maxDate", "disabledDates", "disabledDays", "showTime", "responsiveOptions", "numberOfMonths", "firstDayOfWeek", "view", "defaultDate", "appendTo", "motionOptions"], outputs: ["onFocus", "onBlur", "onClose", "onSelect", "onClear", "onInput", "onTodayClick", "onClearClick", "onMonthChange", "onYearChange", "onClickOutside", "onShow"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.2.0", version: "21.2.23", type: DateFieldInputComponent, isStandalone: true, selector: "vcr-date-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange" }, viewQueries: [{ propertyName: "picker", first: true, predicate: DatePicker, descendants: true, isSignal: true }], ngImport: i0, template: "<!-- Bound to `displayValue` rather than to `value` so the control's own text is not repainted\n     under the user while they are typing a date \u2014 see its doc. `ngModelChange` still reports\n     every keystroke, so the value this renderer publishes is unaffected. -->\n<p-datepicker\n  [inputId]=\"inputId()\"\n  [ngModel]=\"displayValue()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"onFocus()\"\n  (onBlur)=\"onBlur()\"\n  (onInput)=\"onTextInput($event)\"\n  [dateFormat]=\"config().dateFormat\"\n  [selectionMode]=\"config().selectionMode\"\n  [showTime]=\"config().showTime\"\n  [hourFormat]=\"config().hourFormat\"\n  [showSeconds]=\"config().showSeconds\"\n  [stepMinute]=\"config().stepMinute\"\n  [showIcon]=\"config().showIcon\"\n  [iconDisplay]=\"config().iconDisplay\"\n  [minDate]=\"minDate()\"\n  [maxDate]=\"maxDate()\"\n  [numberOfMonths]=\"effectiveNumberOfMonths()\"\n  [showButtonBar]=\"config().showButtonBar\"\n  [showClear]=\"config().showClear\"\n  [readonlyInput]=\"config().readonlyInput\"\n  [inline]=\"config().inline\"\n  [view]=\"effectiveView()\"\n  [placeholder]=\"config().placeholder\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  [appendTo]=\"config().inline ? 'self' : 'body'\"\n/>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep .p-datepicker,:host ::ng-deep input{width:100%}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: DatePicker, selector: "p-datePicker, p-datepicker, p-date-picker", inputs: ["iconDisplay", "styleClass", "inputStyle", "inputId", "inputStyleClass", "placeholder", "ariaLabelledBy", "ariaLabel", "iconAriaLabel", "dateFormat", "multipleSeparator", "rangeSeparator", "inline", "showOtherMonths", "selectOtherMonths", "showIcon", "icon", "readonlyInput", "shortYearCutoff", "hourFormat", "timeOnly", "stepHour", "stepMinute", "stepSecond", "showSeconds", "showOnFocus", "showWeek", "startWeekFromFirstDayOfYear", "showClear", "dataType", "selectionMode", "maxDateCount", "showButtonBar", "todayButtonStyleClass", "clearButtonStyleClass", "autofocus", "autoZIndex", "baseZIndex", "panelStyleClass", "panelStyle", "keepInvalid", "hideOnDateTimeSelect", "touchUI", "timeSeparator", "focusTrap", "showTransitionOptions", "hideTransitionOptions", "tabindex", "minDate", "maxDate", "disabledDates", "disabledDays", "showTime", "responsiveOptions", "numberOfMonths", "firstDayOfWeek", "view", "defaultDate", "appendTo", "motionOptions"], outputs: ["onFocus", "onBlur", "onClose", "onSelect", "onClear", "onInput", "onTodayClick", "onClearClick", "onMonthChange", "onYearChange", "onClickOutside", "onShow"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
 }
 i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: DateFieldInputComponent, decorators: [{
             type: Component,
-            args: [{ selector: 'vcr-date-field-input', standalone: true, imports: [FormsModule, DatePicker], changeDetection: ChangeDetectionStrategy.OnPush, template: "<!-- Bound to `displayValue` rather than to `value` so the control's own text is not repainted\n     under the user while they are typing a date \u2014 see its doc. `ngModelChange` still reports\n     every keystroke, so the value this renderer publishes is unaffected. -->\n<p-datepicker\n  [inputId]=\"inputId()\"\n  [ngModel]=\"displayValue()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"onFocus()\"\n  (onBlur)=\"onBlur()\"\n  (onInput)=\"onTextInput($event)\"\n  [dateFormat]=\"config().dateFormat\"\n  [selectionMode]=\"config().selectionMode\"\n  [showTime]=\"config().showTime\"\n  [hourFormat]=\"config().hourFormat\"\n  [showSeconds]=\"config().showSeconds\"\n  [stepMinute]=\"config().stepMinute\"\n  [showIcon]=\"config().showIcon\"\n  [iconDisplay]=\"config().iconDisplay\"\n  [minDate]=\"minDate()\"\n  [maxDate]=\"maxDate()\"\n  [numberOfMonths]=\"effectiveNumberOfMonths()\"\n  [showButtonBar]=\"config().showButtonBar\"\n  [showClear]=\"config().showClear\"\n  [readonlyInput]=\"config().readonlyInput\"\n  [inline]=\"config().inline\"\n  [view]=\"effectiveView()\"\n  [placeholder]=\"config().placeholder\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  appendTo=\"body\"\n/>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep .p-datepicker,:host ::ng-deep input{width:100%}\n"] }]
+            args: [{ selector: 'vcr-date-field-input', standalone: true, imports: [FormsModule, DatePicker], changeDetection: ChangeDetectionStrategy.OnPush, template: "<!-- Bound to `displayValue` rather than to `value` so the control's own text is not repainted\n     under the user while they are typing a date \u2014 see its doc. `ngModelChange` still reports\n     every keystroke, so the value this renderer publishes is unaffected. -->\n<p-datepicker\n  [inputId]=\"inputId()\"\n  [ngModel]=\"displayValue()\"\n  [ngModelOptions]=\"{ standalone: true }\"\n  (ngModelChange)=\"onValueChange($event)\"\n  (onFocus)=\"onFocus()\"\n  (onBlur)=\"onBlur()\"\n  (onInput)=\"onTextInput($event)\"\n  [dateFormat]=\"config().dateFormat\"\n  [selectionMode]=\"config().selectionMode\"\n  [showTime]=\"config().showTime\"\n  [hourFormat]=\"config().hourFormat\"\n  [showSeconds]=\"config().showSeconds\"\n  [stepMinute]=\"config().stepMinute\"\n  [showIcon]=\"config().showIcon\"\n  [iconDisplay]=\"config().iconDisplay\"\n  [minDate]=\"minDate()\"\n  [maxDate]=\"maxDate()\"\n  [numberOfMonths]=\"effectiveNumberOfMonths()\"\n  [showButtonBar]=\"config().showButtonBar\"\n  [showClear]=\"config().showClear\"\n  [readonlyInput]=\"config().readonlyInput\"\n  [inline]=\"config().inline\"\n  [view]=\"effectiveView()\"\n  [placeholder]=\"config().placeholder\"\n  [required]=\"required()\"\n  [disabled]=\"disabled()\"\n  [invalid]=\"invalid()\"\n  [appendTo]=\"config().inline ? 'self' : 'body'\"\n/>\n", styles: [":host{display:block;min-width:0}:host ::ng-deep .p-datepicker,:host ::ng-deep input{width:100%}\n"] }]
         }], ctorParameters: () => [], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], picker: [{ type: i0.ViewChild, args: [i0.forwardRef(() => DatePicker), { isSignal: true }] }] } });
+/** Whether two values hold the same dates, in the same slots — compared by time, not identity. */
+function sameDates(left, right) {
+    if (Array.isArray(left) && Array.isArray(right)) {
+        return left.length === right.length && left.every((date, index) => sameDate(date, right[index]));
+    }
+    if (Array.isArray(left) || Array.isArray(right)) {
+        return false;
+    }
+    return sameDate(left, right);
+}
+function sameDate(left, right) {
+    return left === null || right === null ? left === right : left.getTime() === right.getTime();
+}
 /** Local midnight today. Built from the parts rather than by zeroing a timestamp, for the reason
     `formatLocalDate` gives: a date-only bound has to mean the local day, not a UTC one. */
 function startOfToday() {

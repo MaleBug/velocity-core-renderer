@@ -1955,7 +1955,8 @@ declare class SelectFieldInputComponent implements FieldRenderer<SelectFieldConf
  *
  * `appendTo="body"` because this renderer is used inside `p-dialog` on the page-content screen,
  * where an in-flow overlay would be clipped by the dialog — the same binding every `p-select` in
- * this app uses.
+ * this app uses. Except when `inline`: PrimeNG still moves an inline calendar to `appendTo`, which
+ * would land it at the foot of the page instead of where the field is, so it stays on `self`.
  *
  * Note there is no locale setting: `p-datepicker` has no `locale` input, and month and day names
  * come from PrimeNG's global translation, which `app.config.ts` does not configure. The config
@@ -2020,11 +2021,22 @@ declare class DateFieldInputComponent implements FieldRenderer<DateFieldConfig, 
      *
      * Re-synced on blur so a value the field itself normalises — or one changed from elsewhere while
      * the input happened to be focused — still reaches the control.
+     *
+     * ## Same dates are not a new value
+     *
+     * A pick also comes back as an echo. `FieldInputComponent` serializes it to the wire string and
+     * deserializes that string straight back, so the same dates arrive here as fresh `Date` objects.
+     * `ngModel` would see a new value and write it, and `writeControlValue` calls `updateUI()`, which
+     * moves the calendar back to the month of the first selected date (the second, when there are
+     * exactly two). On a multiple or range calendar that sends the user away from the month they just
+     * picked in. So a value holding the same dates as the one bound is not written — see {@link sync}.
      */
     readonly displayValue: _angular_core.WritableSignal<DateFieldValue>;
     constructor();
     onFocus(): void;
     onBlur(): void;
+    /** Binds `next` to the picker, unless it holds the same dates it already shows. */
+    private sync;
     /**
      * Reads a date the picker's own parser cannot, for the formats that name no day.
      *
@@ -2060,7 +2072,15 @@ declare class DateFieldInputComponent implements FieldRenderer<DateFieldConfig, 
     /** A fixed bound, or null when the config has none — or when the Date Range switch is off, which
         is what makes that switch a setting rather than a way of hiding two inputs. */
     private fixedBound;
-    /** `p-datepicker` emits undefined when cleared; null is this field's "no value". */
+    /**
+     * `p-datepicker` emits undefined when cleared; null is this field's "no value".
+     *
+     * Also recorded as {@link displayValue}, which is what the picker now holds — `ngModel` never
+     * writes back the value it just emitted, so this costs no repaint. It is what {@link sync}
+     * compares the echo against: effects run batched, so by the time one runs `value` already holds
+     * the facade's re-deserialized copy, and comparing that with the value from before the pick would
+     * find a change and move the calendar.
+     */
     onValueChange(next: DateFieldValue | undefined): void;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<DateFieldInputComponent, never>;
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<DateFieldInputComponent, "vcr-date-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
