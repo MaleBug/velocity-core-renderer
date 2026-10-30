@@ -27,6 +27,10 @@
  * - `COALESCE` is its first argument that is not null.
  *
  * Keywords and function names are case-insensitive; variable names are case-sensitive.
+ *
+ * An expression may nest at most {@link MAX_CALCULATION_DEPTH} deep — parentheses and calls inside
+ * each other, or a parsed tree that tall, as a long chain of operators makes — so neither parsing
+ * nor evaluating it can run out of stack.
  */
 /** Each function with the fewest and most arguments it takes; `null` for no upper bound. */
 const CALCULATION_FUNCTIONS = {
@@ -37,6 +41,8 @@ const CALCULATION_FUNCTIONS = {
     MIN: { min: 1, max: null },
     ROUND: { min: 1, max: 2 },
 };
+/** How deep an expression may nest, far past anything written by hand. */
+const MAX_CALCULATION_DEPTH = 200;
 const KEYWORDS = new Set(['AND', 'OR', 'NOT']);
 const NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
@@ -91,6 +97,8 @@ function tokenize(source) {
 class Parser {
     tokens;
     index = 0;
+    /** How many parentheses and calls the parser is inside — the only places it recurses. */
+    nesting = 0;
     constructor(tokens) {
         this.tokens = tokens;
     }
@@ -100,6 +108,7 @@ class Parser {
         if (next.kind !== 'end') {
             throw new CalculationSyntaxError(`Unexpected ${describe(next)}`, next.position);
         }
+        checkDepth(node);
         return node;
     }
     or() {
@@ -152,16 +161,26 @@ class Parser {
         return node;
     }
     unary() {
-        const sign = this.symbol('-', '+');
-        if (sign !== null) {
-            const position = this.previous().position;
-            return { kind: 'unary', operator: sign, operand: this.unary(), position };
+        // Read the prefix operators in a loop, then wrap the operand innermost first, so `- - - x`
+        // costs no stack however long it is.
+        const operators = [];
+        for (;;) {
+            const sign = this.symbol('-', '+');
+            if (sign !== null) {
+                operators.push({ operator: sign, position: this.previous().position });
+            }
+            else if (this.keyword('NOT')) {
+                operators.push({ operator: 'NOT', position: this.previous().position });
+            }
+            else {
+                break;
+            }
         }
-        if (this.keyword('NOT')) {
-            const position = this.previous().position;
-            return { kind: 'unary', operator: 'NOT', operand: this.unary(), position };
+        let node = this.primary();
+        for (let i = operators.length - 1; i >= 0; i--) {
+            node = { kind: 'unary', operator: operators[i].operator, operand: node, position: operators[i].position };
         }
-        return this.primary();
+        return node;
     }
     primary() {
         const token = this.advance();
@@ -169,9 +188,11 @@ class Parser {
             return { kind: 'number', value: token.value, position: token.position };
         }
         if (token.kind === 'symbol' && token.text === '(') {
-            const node = this.or();
-            this.expect(')');
-            return node;
+            return this.nested(token.position, () => {
+                const node = this.or();
+                this.expect(')');
+                return node;
+            });
         }
         if (token.kind === 'name') {
             const upper = token.text.toUpperCase();
@@ -179,7 +200,7 @@ class Parser {
                 throw new CalculationSyntaxError(`Unexpected ${upper}`, token.position);
             }
             if (this.symbol('(') !== null) {
-                return this.call(token.text, token.position);
+                return this.nested(token.position, () => this.call(token.text, token.position));
             }
             if (Object.hasOwn(CALCULATION_FUNCTIONS, upper)) {
                 throw new CalculationSyntaxError(`${upper} needs parentheses: ${upper}(…)`, token.position);
@@ -207,6 +228,17 @@ class Parser {
             throw new CalculationSyntaxError(`${fn} takes ${expected} argument${expected.endsWith(' 1') || expected === '1' ? '' : 's'}, not ${args.length}`, position);
         }
         return { kind: 'call', name: fn, args, position };
+    }
+    nested(position, parse) {
+        if (++this.nesting > MAX_CALCULATION_DEPTH) {
+            throw new CalculationSyntaxError(tooDeep(), position);
+        }
+        try {
+            return parse();
+        }
+        finally {
+            this.nesting--;
+        }
     }
     peek() {
         return this.tokens[this.index];
@@ -243,6 +275,32 @@ class Parser {
             throw new CalculationSyntaxError(token.kind === 'end' ? `Missing "${text}"` : `Expected "${text}" but found ${describe(token)}`, token.position);
         }
     }
+}
+/**
+ * Refuses a tree taller than {@link MAX_CALCULATION_DEPTH}, which evaluating would recurse through.
+ * Walks it with its own stack, since the tree may be exactly the one too tall to recurse through.
+ */
+function checkDepth(ast) {
+    const stack = [{ node: ast, depth: 1 }];
+    while (stack.length > 0) {
+        const { node, depth } = stack.pop();
+        if (depth > MAX_CALCULATION_DEPTH) {
+            throw new CalculationSyntaxError(tooDeep(), node.position);
+        }
+        const children = node.kind === 'unary'
+            ? [node.operand]
+            : node.kind === 'binary'
+                ? [node.left, node.right]
+                : node.kind === 'call'
+                    ? node.args
+                    : [];
+        for (const child of children) {
+            stack.push({ node: child, depth: depth + 1 });
+        }
+    }
+}
+function tooDeep() {
+    return `The expression nests more than ${MAX_CALCULATION_DEPTH} deep`;
 }
 function describe(token) {
     switch (token.kind) {
@@ -513,5 +571,5 @@ function toCalculationVariable(raw) {
  * Generated bundle index. Do not edit.
  */
 
-export { CALCULATION_AGGREGATES, CALCULATION_FUNCTIONS, DEFAULT_CALCULATED_FIELD_CONFIG, aggregateCalculationValues, calculationReferencedNames, evaluateCalculation, isCalculationVariableName, parseCalculatedFieldConfig, parseCalculation };
+export { CALCULATION_AGGREGATES, CALCULATION_FUNCTIONS, DEFAULT_CALCULATED_FIELD_CONFIG, MAX_CALCULATION_DEPTH, aggregateCalculationValues, calculationReferencedNames, evaluateCalculation, isCalculationVariableName, parseCalculatedFieldConfig, parseCalculation };
 //# sourceMappingURL=velocity-core-renderer-expression.mjs.map

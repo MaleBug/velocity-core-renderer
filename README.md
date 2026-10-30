@@ -116,6 +116,11 @@ underlying control works in; the descriptor's codec handles the conversion.
 `blurred` fires once the user leaves the control, after the value has settled. It is silent for a
 renderer that does not declare it and for an unregistered field type.
 
+`optionAdded` fires with a `FieldChoiceOption` when someone adds a choice from a `Dropdown`'s
+"New option" footer (`allowCustomValue: true`). The value already holds it. To offer it to everyone,
+save it into the field definition: `withChoiceOptionAdded(fieldType, fieldConfig, option)` returns
+the config to write back, with every other member — visibility rules included — carried through.
+
 `fieldType` is **PascalCase** — `Text`, `Email`, `DatePicker`, `RadioButton`. This is what the
 backend has always stored. Lowercase spellings have never existed on the wire.
 
@@ -152,6 +157,12 @@ checkboxes, `Email`, `Url` and `Phone` draw the text input seeded with their inp
 link or phone field is `Text` with Input Type URL or Phone, and `isUrlField` answers "is this
 a link?" for both `Url` and Text + URL), and **`Select` draws radios** — it predates `Dropdown`, and repointing it would change
 what every field already saved as a `Select` draws.
+
+**`allowCustomValue`** on a `Checkbox` group adds a box after the options, labelled
+`customValueLabel` (default `Others`). It is not one of `options` and has no value of its own:
+ticking it shows a text box, and only the typed text is stored. On a
+`Dropdown` it adds the "New option" footer above. Either way the codec keeps a stored value that
+matches no option, instead of reporting it as unreadable.
 
 The fallback is deliberate, not an error state — an unregistered type stays editable.
 

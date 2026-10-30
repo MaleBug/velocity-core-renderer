@@ -27,6 +27,10 @@
  * - `COALESCE` is its first argument that is not null.
  *
  * Keywords and function names are case-insensitive; variable names are case-sensitive.
+ *
+ * An expression may nest at most {@link MAX_CALCULATION_DEPTH} deep — parentheses and calls inside
+ * each other, or a parsed tree that tall, as a long chain of operators makes — so neither parsing
+ * nor evaluating it can run out of stack.
  */
 type CalculationValue = number | null;
 type CalculationNode = {
@@ -95,6 +99,8 @@ declare const CALCULATION_FUNCTIONS: {
     };
 };
 type CalculationFunctionName = keyof typeof CALCULATION_FUNCTIONS;
+/** How deep an expression may nest, far past anything written by hand. */
+declare const MAX_CALCULATION_DEPTH = 200;
 /**
  * Whether `name` can be used as a variable: an identifier that is not a keyword or a function
  * name, either of which would read as something else inside an expression.
@@ -158,5 +164,5 @@ declare const DEFAULT_CALCULATED_FIELD_CONFIG: CalculatedFieldConfig;
  */
 declare function parseCalculatedFieldConfig(json: string | null): CalculatedFieldConfig;
 
-export { CALCULATION_AGGREGATES, CALCULATION_FUNCTIONS, DEFAULT_CALCULATED_FIELD_CONFIG, aggregateCalculationValues, calculationReferencedNames, evaluateCalculation, isCalculationVariableName, parseCalculatedFieldConfig, parseCalculation };
+export { CALCULATION_AGGREGATES, CALCULATION_FUNCTIONS, DEFAULT_CALCULATED_FIELD_CONFIG, MAX_CALCULATION_DEPTH, aggregateCalculationValues, calculationReferencedNames, evaluateCalculation, isCalculationVariableName, parseCalculatedFieldConfig, parseCalculation };
 export type { CalculatedFieldConfig, CalculatedResultType, CalculationAggregate, CalculationBinaryOperator, CalculationError, CalculationFunctionName, CalculationNode, CalculationParseResult, CalculationValue, CalculationVariable };

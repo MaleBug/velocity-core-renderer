@@ -320,6 +320,18 @@ interface CheckboxFieldConfig extends FieldConfigExtras {
     maxSelected: number;
     /** Draw a "Select all" box above the options, ticking or clearing every one of them at once. */
     showToggleAll: boolean;
+    /**
+     * Draw an extra box after the options — {@link customValueLabel} — that takes a value of the
+     * ticker's own.
+     *
+     * Not one of `options`: it has no stored value of its own. Ticking it draws a text box and only
+     * what is typed there is stored, alongside the ticked options' values; ticked but left empty, it
+     * stores nothing. The codec keeps a stored value matching no option while this is on, since that
+     * is how typed text reads back.
+     */
+    allowCustomValue: boolean;
+    /** What the custom-value box reads. Only drawn while {@link allowCustomValue} is on. */
+    customValueLabel: string;
     size: FieldInputSize;
 }
 declare const DEFAULT_CHECKBOX_FIELD_CONFIG: CheckboxFieldConfig;
@@ -780,6 +792,15 @@ interface SelectFieldConfig extends FieldConfigExtras {
     filter: boolean;
     /** What the type-ahead box reads when empty. Only drawn when {@link filter} is set. */
     filterPlaceholder: string;
+    /**
+     * Let the person picking add a choice of their own, from a "New option" footer in the panel.
+     *
+     * An added choice is stored as the value, and the renderer emits it as `optionAdded` so the host
+     * can save it into {@link options} for everyone. The codec keeps a stored value matching no option
+     * while this is on: the host's save may not have landed, or may have failed, and the picked value
+     * must not read as unreadable in the meantime.
+     */
+    allowCustomValue: boolean;
     /** Mark the picked option with a tick in the panel. `p-select` only — `p-multiselect` shows a
         checkbox per row and has no such input. */
     checkmark: boolean;
@@ -1133,6 +1154,16 @@ interface FieldRenderer<TConfig, TValue> {
      * is done — autosave being the motivating case — has no other signal to wait for.
      */
     readonly blurred?: OutputEmitterRef<void>;
+    /**
+     * Fires when the person filling the field adds a choice of their own — today only a dropdown
+     * with `allowCustomValue` on. Optional, and bound by the facade only where it exists, exactly
+     * like {@link blurred}.
+     *
+     * The renderer has already picked the new choice by the time this fires, so the record's value
+     * needs nothing more. What the host owes is saving it into the field definition's options, so
+     * everyone is offered it — see `withChoiceOptionAdded`.
+     */
+    readonly optionAdded?: OutputEmitterRef<FieldChoiceOption>;
 }
 /**
  * One registry entry, fully typed — what a factory returns.
@@ -1258,6 +1289,8 @@ declare const RENDERER_BINDINGS: {
     readonly invalid: "invalid";
     /** See {@link FieldRenderer.blurred}. Optional on the interface, so binding it is conditional. */
     readonly blurred: "blurred";
+    /** See {@link FieldRenderer.optionAdded}. Optional too, so bound the same way as `blurred`. */
+    readonly optionAdded: "optionAdded";
 };
 
 /**
@@ -1739,6 +1772,14 @@ declare class NumberFieldInputComponent implements FieldRenderer<NumberFieldConf
  * the list of ticked values and adds to or filters it on each click. That is why
  * {@link groupValue} never yields null: the filter runs against the current model before anything
  * else, so a null would throw rather than begin a fresh selection.
+ *
+ * ## The Others box (`'group'` with `allowCustomValue`)
+ *
+ * An extra box after the options, labelled `customValueLabel`. It is not one of `options` and has
+ * no stored value of its own: ticking it draws a text box, and only what is typed there is stored.
+ * Any value in the selection matching no option is that text — the codec keeps such values only
+ * while `allowCustomValue` is on — and the other boxes' array model carries it through untouched,
+ * since PrimeNG only ever adds or filters out its own box's value.
  */
 declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxFieldConfig, CheckboxFieldValue> {
     readonly config: _angular_core.InputSignal<CheckboxFieldConfig>;
@@ -1752,6 +1793,7 @@ declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxField
     readonly inputId: _angular_core.Signal<string>;
     /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
+    readonly allowCustomValue: _angular_core.Signal<boolean>;
     /** The boxes in the order `sortChoices` asks for, in group mode. Only the drawing order changes:
         a stored selection is a set of values and does not depend on it. */
     readonly options: _angular_core.Signal<readonly velocity_core_renderer.FieldChoiceOption[]>;
@@ -1766,6 +1808,31 @@ declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxField
     readonly singleValue: _angular_core.Signal<boolean | null>;
     readonly groupValue: _angular_core.Signal<string[]>;
     readonly allOptionValues: _angular_core.Signal<string[]>;
+    /** The text typed beside the Others box: the first selected value matching no option. */
+    readonly customText: _angular_core.Signal<string | null>;
+    /**
+     * Whether the Others box is ticked.
+     *
+     * Ticked while text is stored, and also while it is ticked with nothing typed yet — which
+     * stores nothing, so it is held here rather than read off the value. Linked so stored text
+     * arriving from outside ticks it; clearing the text does not untick it, or the box would vanish
+     * from under the person mid-edit.
+     */
+    private readonly othersTicked;
+    readonly isOthersChecked: _angular_core.Signal<boolean>;
+    readonly customId: _angular_core.Signal<string>;
+    /**
+     * What the Others input shows.
+     *
+     * Linked rather than computed from {@link customText}, because what is stored is trimmed: a
+     * person typing `Light ` on the way to `Light blue` would otherwise lose the space as soon as
+     * the trimmed value came back. The draft is kept while it trims to what is stored, and replaced
+     * only when the value changes from outside.
+     */
+    readonly othersText: _angular_core.WritableSignal<string>;
+    /** Set when a separator was just typed and dropped, so the person learns why it vanished. */
+    readonly othersSeparatorDropped: _angular_core.WritableSignal<boolean>;
+    readonly separator = ",";
     /** The "Select all" row is author-enabled and only worth showing with something to toggle. */
     readonly showToggleAll: _angular_core.Signal<boolean>;
     /** Whether every option is currently ticked. Drives the "Select all" toggle's own checked state. */
@@ -1795,8 +1862,16 @@ declare class CheckboxFieldInputComponent implements FieldRenderer<CheckboxField
     onSingleChange(): void;
     /** PrimeNG hands back the new array; the empty list is what "nothing ticked" means. */
     onGroupChange(next: string[] | null | undefined): void;
-    /** Ticks every option, or clears the selection entirely. */
+    /** Ticks every option, or clears the selection entirely. Text typed beside the Others box is
+        kept on a tick and cleared with everything else. */
     onToggleAll(checked: boolean): void;
+    /** Ticks the Others box, storing whatever is typed beside it, or unticks it and drops that text. */
+    onOthersToggle(checked: boolean): void;
+    /** Stores the typed text in the Others box's place. */
+    onOthersTextChange(next: string): void;
+    /** Replaces the typed text in the selection. Empty text stores nothing — the box has no value
+        of its own to fall back on. */
+    private writeOthers;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<CheckboxFieldInputComponent, never>;
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<CheckboxFieldInputComponent, "vcr-checkbox-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
 }
@@ -1899,6 +1974,14 @@ declare class RadioFieldInputComponent implements FieldRenderer<RadioFieldConfig
  *
  * No Clear button of its own, unlike the radio renderer: both controls have a native clear icon,
  * offered by `SelectFieldConfig.showClear`.
+ *
+ * ## Adding a choice (`allowCustomValue`)
+ *
+ * The panel gets a footer — outside the scrolling list, so it stays put however long the list is
+ * — offering "New option". Adding one picks it at once and emits {@link optionAdded}; saving it
+ * into the field's options is the host's job, since this package owns no transport for field
+ * definitions. Until the host's new config arrives the choice is held in {@link addedOptions}, and
+ * a stored value matching no option is drawn as its own choice so it never shows as blank.
  */
 declare class SelectFieldInputComponent implements FieldRenderer<SelectFieldConfig, SelectFieldValue> {
     readonly config: _angular_core.InputSignal<SelectFieldConfig>;
@@ -1907,6 +1990,16 @@ declare class SelectFieldInputComponent implements FieldRenderer<SelectFieldConf
     readonly required: _angular_core.InputSignal<boolean>;
     readonly disabled: _angular_core.InputSignal<boolean>;
     readonly invalid: _angular_core.InputSignal<boolean>;
+    /** See `FieldRenderer.optionAdded`. */
+    readonly optionAdded: _angular_core.OutputEmitterRef<FieldChoiceOption>;
+    /** Choices added here that the config does not carry yet — see the class note. */
+    readonly addedOptions: _angular_core.WritableSignal<FieldChoiceOption[]>;
+    /** Whether the footer shows its input rather than its "New option" button. */
+    readonly isAdding: _angular_core.WritableSignal<boolean>;
+    readonly newOptionText: _angular_core.WritableSignal<string>;
+    /** Why the typed choice cannot be added, or `''`. */
+    readonly newOptionError: _angular_core.WritableSignal<string>;
+    readonly allowCustomValue: _angular_core.Signal<boolean>;
     /** The control's own id, so the facade's `<label for>` points at it. Same derivation as every
         other renderer of a single control. */
     readonly inputId: _angular_core.Signal<string>;
@@ -1923,6 +2016,8 @@ declare class SelectFieldInputComponent implements FieldRenderer<SelectFieldConf
      * never needs to, because it iterates the array itself rather than handing it to a control.
      */
     readonly options: _angular_core.Signal<FieldChoiceOption[]>;
+    /** The empty state is for a list with nothing to pick, which a field taking new choices is not. */
+    readonly hasNothingToShow: _angular_core.Signal<boolean>;
     readonly isMultiple: _angular_core.Signal<boolean>;
     /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
@@ -1944,10 +2039,32 @@ declare class SelectFieldInputComponent implements FieldRenderer<SelectFieldConf
      * reference with `FieldInputComponent.decoded` cannot corrupt that computed's cached value.
      */
     readonly multipleValue: _angular_core.Signal<string[]>;
+    /** Every value currently picked, in either mode. */
+    private readonly pickedValues;
+    startAdding(): void;
+    cancelAdding(): void;
+    setNewOptionText(next: string): void;
+    /**
+     * Adds the typed choice and picks it.
+     *
+     * A choice already offered — by value or by label, case-insensitively — is picked rather than
+     * added again, so a person who did not spot it in the list still lands on the one everybody
+     * else picks. In `'multiple'` mode a separator is refused: the stored join could not tell it
+     * from two picks.
+     */
+    addOption(): void;
+    /**
+     * Keys typed in the footer stay in the footer.
+     *
+     * The input sits inside the control's overlay, whose own keyboard handling would otherwise move
+     * the highlight on arrows, pick on Space and close on Escape. Enter adds, Escape backs out of
+     * adding without closing the panel.
+     */
+    onNewOptionKeydown(event: KeyboardEvent): void;
     onSingleChange(next: string | null | undefined): void;
     onMultipleChange(next: string[] | null | undefined): void;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<SelectFieldInputComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<SelectFieldInputComponent, "vcr-select-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<SelectFieldInputComponent, "vcr-select-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "optionAdded": "optionAdded"; }, never, never, true, never>;
 }
 
 /**
@@ -2211,6 +2328,17 @@ declare function isFieldRendererRegistered(fieldType: string): boolean;
  */
 declare function isUrlField(fieldType: string, fieldConfig: string | null): boolean;
 /**
+ * A field's saved config with `option` added to its choices, ready to save — or `null` for a
+ * field that has no choices to add to.
+ *
+ * For a host acting on `optionAdded`: the renderer has already picked the new choice, and this is
+ * the config to write back so everyone else is offered it too. An option whose value or label is
+ * already offered (case-insensitively) is not added twice; the config comes back unchanged.
+ *
+ * Every other member, including unknown ones such as visibility rules, is carried through.
+ */
+declare function withChoiceOptionAdded(fieldType: string, fieldConfig: string | null, option: FieldChoiceOption): string | null;
+/**
  * Why a value does not fit its field's format, or `null` when it does — today, a text field whose
  * Input Type is Email or URL. See `textValueFormatError` for the rules.
  *
@@ -2384,6 +2512,12 @@ declare class FieldInputComponent {
      * unregistered field type, whose fallback textarea has no renderer to blur.
      */
     readonly blurred: _angular_core.OutputEmitterRef<void>;
+    /**
+     * Re-emitted from the renderer's own `optionAdded`: the person filling the field added a choice
+     * of their own, and the host should save it into the field's options. The value already holds
+     * it. Silent for every renderer that does not declare the output.
+     */
+    readonly optionAdded: _angular_core.OutputEmitterRef<FieldChoiceOption>;
     /** Where the chosen renderer is created. Absent while the field type is unregistered, since
         the anchor only exists inside that branch of the template. */
     private readonly anchor;
@@ -2429,7 +2563,7 @@ declare class FieldInputComponent {
      */
     private commit;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<FieldInputComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; "optionAdded": "optionAdded"; }, never, never, true, never>;
 }
 
 /**
@@ -2546,5 +2680,5 @@ declare class FieldValueComponent {
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldValueComponent, "vcr-field-value", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "readonly": { "alias": "readonly"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "committed": "committed"; }, never, never, true, never>;
 }
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml, withChoiceOptionAdded };
 export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldControlOrigin, FieldControlSource, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, ResolvedFieldControl, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };
