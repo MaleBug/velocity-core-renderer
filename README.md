@@ -142,10 +142,17 @@ into it, and the release notes are a better place to ask "since when".
 | `Media`                         | a placeholder glyph that edits nothing                      |
 | everything else                 | plain `<textarea>` fallback                                 |
 
-**`TextArea` with `wysiwyg: true`** draws a `contenteditable` box with five buttons — bold, italic,
-underline, bulleted list, numbered list — and stores sanitized HTML. A plain value saved before the
-flag was turned on opens with its line breaks kept. `formatFieldValue` reads the HTML back as plain
-text (for grids and `valueFormatted`); `vcr-field-value` shows it formatted.
+**`TextArea` with `wysiwyg: true`** draws a `contenteditable` box with a toolbar strip along its
+bottom, and stores sanitized HTML. The toolbar's buttons are set per field in the admin:
+`toolbarBold`, `toolbarItalic`, `toolbarUnderline`, `toolbarBulletList` and `toolbarNumberedList`
+default on, and `toolbarAttachment` defaults off. A format whose button is off is refused from its
+Ctrl/Cmd shortcut too. **The attachment button is a placeholder** (`PLACEHOLDER(field-attachments)`
+in `rich-text-editor/`): nothing stores a field's attachments yet, so it draws but does nothing.
+A host editing a value in place passes `[showActions]="true"` to `vcr-field-input` to get ✕/✓ at
+the toolbar's right end, emitting `cancelRequested`/`saveRequested`. `fieldInputDrawsActions`
+says ahead of time whether a field will draw them, so the host can drop its own pair. A plain value
+saved before the flag was turned on opens with its line breaks kept. `formatFieldValue` reads the
+HTML back as plain text (for grids and `valueFormatted`); `vcr-field-value` shows it formatted.
 
 **`Media`** is registered so a facade never falls back to a raw textarea for it, but it is a
 placeholder until the media picker moves here. `isPackageEditableFieldType` leaves it out, which

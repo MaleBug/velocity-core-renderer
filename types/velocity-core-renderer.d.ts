@@ -951,21 +951,40 @@ interface TextareaFieldConfig extends FieldConfigExtras {
     showClear: boolean;
     size: FieldInputSize;
     /**
-     * Draw a rich-text box with a five-button toolbar (bold, italic, underline, bulleted and numbered
-     * lists) instead of a plain `<textarea>`, and store the value as sanitized HTML. See
-     * `RichTextEditorComponent`.
+     * Draw a rich-text box with a formatting toolbar instead of a plain `<textarea>`, and store the
+     * value as sanitized HTML. Which buttons the toolbar shows is set by the `toolbar…` members
+     * below. See `RichTextEditorComponent`.
      *
      * `rows` still sets the box's height. `placeholder`, `maxLength`, `autoResize` and `showClear`
      * apply only to the plain textarea — the rich box always grows to fit, and a character limit
      * measured against markup would count tags the person typing never sees.
      */
     wysiwyg: boolean;
+    toolbarBold: boolean;
+    toolbarItalic: boolean;
+    toolbarUnderline: boolean;
+    toolbarBulletList: boolean;
+    toolbarNumberedList: boolean;
+    /** Off by default. The button is a placeholder for now: nothing stores a field's attachments
+        yet, so it draws but uploads nothing. See `RichTextEditorComponent`. */
+    toolbarAttachment: boolean;
 }
 /** Matches the `rows="5"` the raw-JSON textarea this renderer replaces has always used. */
 declare const DEFAULT_TEXTAREA_FIELD_CONFIG: TextareaFieldConfig;
 /** A saved textarea config, defaulting every member it cannot read. See `parseTextFieldConfig`
     for why `defaults` is a parameter. */
 declare function parseTextareaFieldConfig(json: string | null, defaults: TextareaFieldConfig): TextareaFieldConfig;
+/** Which buttons a rich-text toolbar draws — the `toolbar…` members of a textarea config. */
+interface RichTextToolbarButtons {
+    bold: boolean;
+    italic: boolean;
+    underline: boolean;
+    bulletList: boolean;
+    numberedList: boolean;
+    attachment: boolean;
+}
+/** The toolbar a textarea config asks for. */
+declare function richTextToolbarButtons(config: TextareaFieldConfig): RichTextToolbarButtons;
 
 /**
  * The renderer primitives this app can draw a field's value with.
@@ -1164,6 +1183,17 @@ interface FieldRenderer<TConfig, TValue> {
      * everyone is offered it — see `withChoiceOptionAdded`.
      */
     readonly optionAdded?: OutputEmitterRef<FieldChoiceOption>;
+    /**
+     * Asks the control to draw its own ✕/✓, for a host editing a value in place whose actions would
+     * otherwise sit beside it. Optional, and bound by the facade only where it exists, like
+     * {@link blurred}. Today only the `wysiwyg` textarea draws them, in its toolbar; see
+     * `fieldInputDrawsActions` for asking ahead of time.
+     */
+    readonly showActions?: InputSignal<boolean>;
+    /** The control's ✓ was pressed. Only emitted while {@link showActions} is on. */
+    readonly saveRequested?: OutputEmitterRef<void>;
+    /** The control's ✕ was pressed. Only emitted while {@link showActions} is on. */
+    readonly cancelRequested?: OutputEmitterRef<void>;
 }
 /**
  * One registry entry, fully typed — what a factory returns.
@@ -1291,6 +1321,10 @@ declare const RENDERER_BINDINGS: {
     readonly blurred: "blurred";
     /** See {@link FieldRenderer.optionAdded}. Optional too, so bound the same way as `blurred`. */
     readonly optionAdded: "optionAdded";
+    /** See {@link FieldRenderer.showActions}. Optional, and bound like `blurred`. */
+    readonly showActions: "showActions";
+    readonly saveRequested: "saveRequested";
+    readonly cancelRequested: "cancelRequested";
 };
 
 /**
@@ -1605,7 +1639,14 @@ declare class TextareaFieldInputComponent implements FieldRenderer<TextareaField
     /** Fires once the user leaves the control. The textarea codec is identity, so `value` is already
         settled by the time this emits — there is no rounding or repainting to wait for here. */
     readonly blurred: _angular_core.OutputEmitterRef<void>;
+    /** Asks the rich-text box for ✕/✓ in its toolbar. Ignored by the plain textarea, which has no
+        toolbar — see `FieldRenderer.showActions`. */
+    readonly showActions: _angular_core.InputSignal<boolean>;
+    readonly saveRequested: _angular_core.OutputEmitterRef<void>;
+    readonly cancelRequested: _angular_core.OutputEmitterRef<void>;
     readonly inputId: _angular_core.Signal<string>;
+    /** A `computed` so the toolbar input keeps its identity until the config changes. */
+    readonly toolbar: _angular_core.Signal<velocity_core_renderer.RichTextToolbarButtons>;
     /** `'medium'` is the theme's normal size, which PrimeNG spells as `undefined`. */
     readonly primeSize: _angular_core.Signal<"small" | "large" | undefined>;
     /** As `NumberFieldInputComponent`'s native `showClear`, but drawn by hand: `pTextarea` is a
@@ -1614,7 +1655,7 @@ declare class TextareaFieldInputComponent implements FieldRenderer<TextareaField
     readonly canClear: _angular_core.Signal<boolean>;
     clear(): void;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<TextareaFieldInputComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<TextareaFieldInputComponent, "vcr-textarea-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<TextareaFieldInputComponent, "vcr-textarea-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "showActions": { "alias": "showActions"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; "saveRequested": "saveRequested"; "cancelRequested": "cancelRequested"; }, never, never, true, never>;
 }
 
 /**
@@ -2248,13 +2289,17 @@ type RichTextCommand = 'bold' | 'italic' | 'underline' | 'insertUnorderedList' |
 /**
  * The rich-text box a `TextArea` field draws when its config has `wysiwyg` on.
  *
- * A trimmed port of the client's notes composer (`app-wysiwyg-editor`): the same `contenteditable`
- * box and `execCommand` formatting, keeping only its five format buttons — no placeholder,
- * attachments, notify list, mentions or submit button, since a field saves through its host like
- * every other renderer.
+ * The field-value editor, with its own design rather than the notes composer's
+ * (`app-wysiwyg-editor` in the client, which it started as a port of): one box, the text on top and
+ * a toolbar strip along the bottom. The same `contenteditable` box and `execCommand` formatting,
+ * with the buttons the field's config turns on — no placeholder, notify list, mentions or submit
+ * button, since a field saves through its host like every other renderer.
+ *
+ * A host that edits a value in place can ask for {@link showActions}: ✕/✓ at the right end of the
+ * toolbar, emitting {@link cancelRequested}/{@link saveRequested}. The host still does the saving.
  *
  * The icons are inline SVG copied from Lucide rather than `@lucide/angular`, so this package does
- * not take a peer dependency for five glyphs.
+ * not take a peer dependency for a handful of glyphs.
  *
  * Not registered on its own: `TextareaFieldInputComponent` draws it in place of its `<textarea>`.
  */
@@ -2267,6 +2312,14 @@ declare class RichTextEditorComponent {
     readonly required: _angular_core.InputSignal<boolean>;
     readonly disabled: _angular_core.InputSignal<boolean>;
     readonly invalid: _angular_core.InputSignal<boolean>;
+    /** Which buttons to draw. Defaults to a config with nothing set: every format, no attachment. */
+    readonly toolbar: _angular_core.InputSignal<RichTextToolbarButtons>;
+    /** Draws ✕/✓ at the toolbar's right end, for a host that edits the value in place. */
+    readonly showActions: _angular_core.InputSignal<boolean>;
+    /** The ✓ was pressed. The value is already current — this only says the person is done. */
+    readonly saveRequested: _angular_core.OutputEmitterRef<void>;
+    /** The ✕ was pressed. Discarding the edit is the host's job. */
+    readonly cancelRequested: _angular_core.OutputEmitterRef<void>;
     /** Fires when focus leaves the whole composer — not when it moves between the box and its
         toolbar. */
     readonly blurred: _angular_core.OutputEmitterRef<void>;
@@ -2282,10 +2335,13 @@ declare class RichTextEditorComponent {
     private lastEmitted;
     constructor();
     format(command: RichTextCommand): void;
+    /** Refuses the native Ctrl/Cmd+B/I/U shortcut for a format whose button is off — otherwise a
+        format the author hid would still be one keystroke away. */
+    onKeydown(event: KeyboardEvent): void;
     onInput(): void;
     onFocusOut(event: FocusEvent): void;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<RichTextEditorComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<RichTextEditorComponent, "vcr-rich-text-editor", never, { "value": { "alias": "value"; "required": false; "isSignal": true; }; "inputId": { "alias": "inputId"; "required": false; "isSignal": true; }; "rows": { "alias": "rows"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<RichTextEditorComponent, "vcr-rich-text-editor", never, { "value": { "alias": "value"; "required": false; "isSignal": true; }; "inputId": { "alias": "inputId"; "required": false; "isSignal": true; }; "rows": { "alias": "rows"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "toolbar": { "alias": "toolbar"; "required": false; "isSignal": true; }; "showActions": { "alias": "showActions"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "saveRequested": "saveRequested"; "cancelRequested": "cancelRequested"; "blurred": "blurred"; }, never, never, true, never>;
 }
 
 /**
@@ -2327,6 +2383,15 @@ declare function isFieldRendererRegistered(fieldType: string): boolean;
  * type was switched to something else no longer holds an address.
  */
 declare function isUrlField(fieldType: string, fieldConfig: string | null): boolean;
+/**
+ * Whether `<vcr-field-input [showActions]="true">` draws its own ✕/✓ for this field — today a
+ * `TextArea` with `wysiwyg` on, in its toolbar. A host that edits in place asks this to decide
+ * whether to keep drawing its own pair beside the control.
+ *
+ * Read off the descriptor's kind and parsed config, like {@link isUrlField}, so a retired wire
+ * type sharing the textarea renderer answers the same.
+ */
+declare function fieldInputDrawsActions(fieldType: string, fieldConfig: string | null): boolean;
 /**
  * A field's saved config with `option` added to its choices, ready to save — or `null` for a
  * field that has no choices to add to.
@@ -2518,6 +2583,16 @@ declare class FieldInputComponent {
      * it. Silent for every renderer that does not declare the output.
      */
     readonly optionAdded: _angular_core.OutputEmitterRef<FieldChoiceOption>;
+    /**
+     * Asks the renderer to draw its own ✕/✓ — see `FieldRenderer.showActions`. Off by default.
+     * A renderer that does not declare it draws none, so a host turning it on should ask
+     * `fieldInputDrawsActions` whether to keep its own.
+     */
+    readonly showActions: _angular_core.InputSignal<boolean>;
+    /** Re-emitted from the renderer's ✓. Silent for a renderer that draws none. */
+    readonly saveRequested: _angular_core.OutputEmitterRef<void>;
+    /** Re-emitted from the renderer's ✕. Silent for a renderer that draws none. */
+    readonly cancelRequested: _angular_core.OutputEmitterRef<void>;
     /** Where the chosen renderer is created. Absent while the field type is unregistered, since
         the anchor only exists inside that branch of the template. */
     private readonly anchor;
@@ -2563,7 +2638,7 @@ declare class FieldInputComponent {
      */
     private commit;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<FieldInputComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; "optionAdded": "optionAdded"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "showActions": { "alias": "showActions"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; "optionAdded": "optionAdded"; "saveRequested": "saveRequested"; "cancelRequested": "cancelRequested"; }, never, never, true, never>;
 }
 
 /**
@@ -2680,5 +2755,5 @@ declare class FieldValueComponent {
     static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldValueComponent, "vcr-field-value", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "readonly": { "alias": "readonly"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "committed": "committed"; }, never, never, true, never>;
 }
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml, withChoiceOptionAdded };
-export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldControlOrigin, FieldControlSource, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, ResolvedFieldControl, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };
+export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, fieldInputDrawsActions, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, richTextToolbarButtons, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml, withChoiceOptionAdded };
+export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldControlOrigin, FieldControlSource, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, ResolvedFieldControl, RichTextToolbarButtons, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };
