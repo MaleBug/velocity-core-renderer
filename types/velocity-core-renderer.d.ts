@@ -1,5 +1,6 @@
 import * as _angular_core from '@angular/core';
 import { InputSignal, ModelSignal, OutputEmitterRef, Type } from '@angular/core';
+import { Observable } from 'rxjs';
 import { FieldDefinitionType } from 'velocity-core-renderer/vocabulary';
 export * from 'velocity-core-renderer/vocabulary';
 import { CalculatedFieldConfig } from 'velocity-core-renderer/expression';
@@ -816,6 +817,170 @@ declare const DEFAULT_SELECT_FIELD_CONFIG: SelectFieldConfig;
 declare function parseSelectFieldConfig(json: string | null, defaults: SelectFieldConfig): SelectFieldConfig;
 
 /**
+ * A prefix or suffix: a fixed value, or one that follows page state. The same shape the admin's
+ * `StateBoundValue<string>` has, restated here because this package carries no page-state model.
+ * A host without page state reads a bound value as its default — see {@link idAffixFallbackText}.
+ */
+type IdAffixValue = {
+    source: 'literal';
+    value: string;
+} | {
+    source: 'state';
+    stateKey: string;
+    defaultValue: string;
+} | {
+    source: 'expression';
+    template: string;
+    defaultValue: string;
+};
+/** What the user edits an editable suffix with: typed text, or one letter A-Z from a dropdown. */
+declare const ID_SUFFIX_INPUTS: readonly ["text", "dropdown"];
+type IdSuffixInput = (typeof ID_SUFFIX_INPUTS)[number];
+/** The parts of an ID that can each also be saved to a field of their own. */
+declare const ID_FORMAT_PARTS: readonly ["prefix", "number", "suffix"];
+type IdFormatPart = (typeof ID_FORMAT_PARTS)[number];
+/**
+ * A field of the same object that also receives one part of the ID when the record is saved,
+ * snapshotted when the ID field is saved so a host can write it without loading its definition.
+ */
+interface IdFormatPartField {
+    key: string;
+    fieldDefinitionId: string;
+    fieldType: string;
+    fieldConfig: string | null;
+}
+/** A `Text` field's ID format. */
+interface TextIdFormat {
+    addPrefix: boolean;
+    /** Required whenever `addPrefix` is on. When bound, the default is used until the key has a value. */
+    prefix: IdAffixValue;
+    /** Whether a `-` separates the prefix from the number (`OFF-4`). */
+    prefixSeparator: boolean;
+    /** Most characters the prefix may have; null for no limit. */
+    prefixMaxLength: number | null;
+    addSuffix: boolean;
+    suffix: IdAffixValue;
+    /** Whether a `-` separates the number from the suffix (`4-US`). */
+    suffixSeparator: boolean;
+    /** Whether the user can edit the suffix. */
+    suffixEditable: boolean;
+    suffixInput: IdSuffixInput;
+    /** Most characters the suffix may have (text input only); null for no limit. */
+    suffixMaxLength: number | null;
+    /** Optional name for what the suffix is used for (for example "Extension"), shown beside it. */
+    suffixLabel: string;
+    /** Fields that also receive the ID's parts on save; null where a part is not saved separately. */
+    saveTo: Record<IdFormatPart, IdFormatPartField | null>;
+}
+declare const DEFAULT_TEXT_ID_FORMAT: TextIdFormat;
+/** A saved `idFormat`, or null when it is absent or not an object (the field is then plain text). */
+declare function parseTextIdFormat(raw: unknown): TextIdFormat | null;
+/** The affix as a host without page state reads it: the literal value, or the bound default. */
+declare function idAffixFallbackText(value: IdAffixValue): string;
+/**
+ * The text around the number once the format is resolved: the locked prefix and suffix already
+ * carry their dashes, so the full ID is `prefix + number + suffix`.
+ */
+interface IdAffixes {
+    prefix: string;
+    suffix: string;
+    /** The user can edit the suffix: it shows as an input that starts with `suffix`. */
+    suffixEditable?: boolean;
+    /** The dash the editable suffix starts with, shown beside a suffix dropdown. */
+    suffixDash?: string;
+    /** Most characters an editable suffix may have. */
+    suffixMaxLength?: number | null;
+    /** When set, the editable suffix is picked from these options (searchable) instead of typed. */
+    suffixOptions?: string[];
+    /** Optional name for what the suffix is used for, shown beside it. */
+    suffixLabel?: string;
+    /** The dash the prefix ends with; left out of the prefix saved on its own. */
+    prefixDash?: string;
+    /** Text already at the start of `prefix` that is not the configured prefix (for example the
+        property's ID and a dash); left out of the prefix saved on its own. */
+    prefixLead?: string;
+}
+/** The suffix dropdown's options. */
+declare const ID_SUFFIX_LETTERS: readonly string[];
+/**
+ * The format resolved to locked text. `resolveText` reads a prefix or suffix (page state, `{{ }}`
+ * placeholders); it defaults to {@link idAffixFallbackText}. `lead` goes in front of the prefix,
+ * joined by nothing (pass its own dash), and is not part of the prefix saved on its own.
+ */
+declare function resolveIdAffixes(format: TextIdFormat, resolveText?: (value: IdAffixValue) => string, lead?: string): IdAffixes;
+/** Joins the locked prefix, the number and the suffix. The affixes carry their dashes already. */
+declare function composeId(affixes: Pick<IdAffixes, 'prefix' | 'suffix'>, number: string): string;
+/** Whether the ID has a locked prefix and/or suffix around the number. */
+declare function hasIdAffixes(affixes: Pick<IdAffixes, 'prefix' | 'suffix'>): boolean;
+/** Digits only, no leading zeros, at most 9 digits — what the number input accepts. */
+declare function sanitizeIdNumber(value: string): string;
+/**
+ * The editable number inside a full ID, or '' when the ID does not carry these affixes (so a
+ * changed prefix never leaves the old number behind as if it were new).
+ */
+declare function numberOfId(id: string, affixes: Pick<IdAffixes, 'prefix' | 'suffix'>): string;
+/**
+ * An editable suffix as it may be stored: without a dash in front (`suffixDash` empty), leading
+ * digits are dropped, because they would read back as part of the number (`12` + `3` → `123`).
+ */
+declare function sanitizeEditableSuffix(suffix: string, suffixDash: string): string;
+/**
+ * Splits a full ID into its number and the suffix that follows it, for an ID built with an
+ * editable suffix. Null when the ID does not start with the prefix or has no valid number after it.
+ */
+declare function splitEditableSuffix(id: string, prefix: string): {
+    number: string;
+    suffix: string;
+} | null;
+/**
+ * A stored ID read back into what the control edits: the number and (for an editable suffix) the
+ * suffix as typed. `{ number: '', suffix: '' }` for an empty value; null for a value these affixes
+ * cannot have built, which a host should show as it is rather than lose.
+ */
+declare function splitIdValue(value: string, affixes: IdAffixes): {
+    number: string;
+    suffix: string;
+} | null;
+/**
+ * The full ID and its parts as they are saved: the prefix and suffix without their dashes (and
+ * without any lead), the number as typed. The full ID is blank until a number is entered, so an
+ * empty input is never saved as a prefix alone.
+ */
+declare function idParts(number: string, suffix: string, affixes: IdAffixes): Record<IdFormatPart | 'full', string>;
+/** The parts of a stored full ID, or null when these affixes cannot have built it. */
+declare function idPartsOfValue(value: string, affixes: IdAffixes): Record<IdFormatPart | 'full', string> | null;
+/** Why the prefix or suffix cannot be saved yet, or null. Only the prefix needs a default. */
+declare function idFormatIssue(format: TextIdFormat, part: 'prefix' | 'suffix'): string | null;
+/** Whether the prefix and suffix settings can be saved. */
+declare function isIdFormatValid(format: TextIdFormat): boolean;
+/** An example ID from the format as configured (a bound value shows its default). */
+declare function idFormatPreview(format: TextIdFormat): string;
+/**
+ * Generates and checks IDs. The host builds it — this package makes no HTTP calls — already bound
+ * to the account and the fields the ID lives in.
+ */
+interface IdLookup {
+    /** The next free ID for these affixes, for example `OFF-4-US`. Null when none is known. */
+    next(affixes: IdAffixes): Observable<string | null>;
+    /** Whether the full ID is already used. */
+    exists(id: string): Observable<boolean>;
+}
+/**
+ * What a host passes `vcr-field-input` for a field with an ID format. Every member is optional:
+ * without a context the control still draws the locked affixes (bound ones at their default), and
+ * the user types the number.
+ */
+interface FieldIdContext {
+    lookup?: IdLookup | null;
+    /** Reads a prefix or suffix against the host's page state. */
+    resolveAffix?: (value: IdAffixValue) => string;
+    /** Text in front of the prefix that is not part of it (pass its own dash). */
+    prefixLead?: string;
+    /** What the ID is called in messages, e.g. `Lease Number`. Defaults to the field's label. */
+    entityLabel?: string;
+}
+
+/**
  * What the browser should treat the input as.
  *
  * This is the one config member that earns four `fieldType`s from one renderer: `Text`, `Email`,
@@ -916,6 +1081,13 @@ interface TextFieldConfig extends FieldConfigExtras {
         `<input>` with nothing built in. See `TextFieldInputComponent`. */
     showClear: boolean;
     size: FieldInputSize;
+    /**
+     * Builds the value from a locked prefix, a number and a suffix — a Property ID or a Lease
+     * Number. Null (the default) keeps a plain text box. While set, the control is the ID input
+     * (`AffixedIdInputComponent`) and `inputType`, `mask`, the display affixes and Clear are not
+     * drawn. See `id-format.model.ts`.
+     */
+    idFormat: TextIdFormat | null;
 }
 declare const DEFAULT_TEXT_FIELD_CONFIG: TextFieldConfig;
 /**
@@ -1194,6 +1366,14 @@ interface FieldRenderer<TConfig, TValue> {
     readonly saveRequested?: OutputEmitterRef<void>;
     /** The control's ✕ was pressed. Only emitted while {@link showActions} is on. */
     readonly cancelRequested?: OutputEmitterRef<void>;
+    /**
+     * The host's lookup and page state for an ID built from a prefix, a number and a suffix. Today
+     * only the `Text` renderer declares it, for a config with an `idFormat`. Optional, and bound by
+     * the facade only where it exists, like {@link showActions}.
+     */
+    readonly idContext?: InputSignal<FieldIdContext | null>;
+    /** Whether that ID is already used. Emitted only with a lookup in {@link idContext}. */
+    readonly duplicateChange?: OutputEmitterRef<boolean>;
 }
 /**
  * One registry entry, fully typed — what a factory returns.
@@ -1325,6 +1505,9 @@ declare const RENDERER_BINDINGS: {
     readonly showActions: "showActions";
     readonly saveRequested: "saveRequested";
     readonly cancelRequested: "cancelRequested";
+    /** See {@link FieldRenderer.idContext}. Optional, and bound like `showActions`. */
+    readonly idContext: "idContext";
+    readonly duplicateChange: "duplicateChange";
 };
 
 /**
@@ -1527,9 +1710,38 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
     /** Fires once the user leaves the control. Text codecs are identity, so `value` is already
         settled by the time this emits — there is no rounding or repainting to wait for here. */
     readonly blurred: _angular_core.OutputEmitterRef<void>;
+    /** For a field with an ID format: the lookup and page state the host has. Optional — see
+        `FieldIdContext`. */
+    readonly idContext: _angular_core.InputSignal<FieldIdContext | null>;
+    /** For a field with an ID format: whether the ID is already used, as the lookup answers. */
+    readonly duplicateChange: _angular_core.OutputEmitterRef<boolean>;
     /** The control's `id`, which `FieldInputComponent`'s label points at. Falls back to a constant
         only so the attribute is never empty; a field with no key is a create in progress. */
     readonly inputId: _angular_core.Signal<string>;
+    /** The ID format resolved to locked text, or null for a plain text field. */
+    readonly idAffixes: _angular_core.Signal<IdAffixes | null>;
+    /**
+     * The number and suffix being edited. Read from the value, except that clearing the number keeps
+     * a suffix already typed — the value is blank until there is a number, so it cannot carry one.
+     */
+    private readonly idState;
+    readonly idNumber: _angular_core.Signal<string>;
+    readonly idSuffix: _angular_core.Signal<string>;
+    /**
+     * Whether the stored value cannot have been built by the ID format (saved before the format, or
+     * the prefix since changed). Such a value is shown in the plain input, so it is never lost.
+     */
+    readonly idValueUnreadable: _angular_core.Signal<boolean>;
+    readonly drawsIdInput: _angular_core.Signal<boolean>;
+    /** The value the field opened with: an empty one gets the next free number, a saved one keeps
+        its own and is not flagged as a duplicate of itself. Re-read only when the format changes. */
+    readonly idOpenedWith: _angular_core.WritableSignal<string>;
+    readonly idEntityLabel: _angular_core.Signal<string>;
+    /** The affixes the value was last built with, to rebuild it when they change. */
+    private builtWith;
+    /** Whether the ID control was drawn, so leaving it for the plain input clears its duplicate. */
+    private drewIdInput;
+    constructor();
     /** A mask applies to `Phone` alone, whatever a config saved before that rule holds — see
         `TextFieldConfig.mask`. */
     readonly hasMask: _angular_core.Signal<boolean>;
@@ -1611,6 +1823,9 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
     onFocus(): void;
     onBlur(): void;
     clear(): void;
+    onIdNumber(number: string): void;
+    onIdSuffix(suffix: string): void;
+    private commitId;
     /**
      * One edge's value, but only when that edge is in the mode asked for.
      *
@@ -1619,7 +1834,94 @@ declare class TextFieldInputComponent implements FieldRenderer<TextFieldConfig, 
      */
     private affix;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<TextFieldInputComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<TextFieldInputComponent, "vcr-text-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<TextFieldInputComponent, "vcr-text-field-input", never, { "config": { "alias": "config"; "required": true; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "idContext": { "alias": "idContext"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; "duplicateChange": "duplicateChange"; }, never, never, true, never>;
+}
+
+/**
+ * An ID built from a locked prefix, a number and an optional suffix (locked, typed, or picked from
+ * an A-Z dropdown): `OFF-` + `4` + `-US`. With a lookup, the next free number is generated, the
+ * user can change it, and a number already used is flagged. A failed lookup never blocks the user.
+ *
+ * What a `Text` field with an `idFormat` draws (see `TextFieldInputComponent`), and usable on its
+ * own by a host that edits the number and suffix separately.
+ */
+declare class AffixedIdInputComponent {
+    private readonly host;
+    /** The locked prefix and suffix, already resolved and carrying their dashes. */
+    readonly affixes: _angular_core.InputSignal<IdAffixes>;
+    /** Generates and checks IDs. Without it the user types the number and nothing is pre-checked. */
+    readonly lookup: _angular_core.InputSignal<IdLookup | null>;
+    /**
+     * Whether an empty number is filled with the next free one as soon as the affixes are known.
+     * Off for a record that already has its ID, so opening it never proposes a new one; the
+     * regenerate button still works.
+     */
+    readonly autoGenerate: _angular_core.InputSignal<boolean>;
+    readonly inputId: _angular_core.InputSignal<string>;
+    readonly placeholder: _angular_core.InputSignal<string>;
+    /** What the ID is called in messages, e.g. `Lease Number`. */
+    readonly entityLabel: _angular_core.InputSignal<string>;
+    /** Draws the field as invalid (a required error the parent shows). */
+    readonly invalid: _angular_core.InputSignal<boolean>;
+    readonly disabled: _angular_core.InputSignal<boolean>;
+    /** An ID equal to this is the record's own, so it is never flagged as a duplicate. */
+    readonly ownValue: _angular_core.InputSignal<string>;
+    /** The number between the prefix and suffix. */
+    readonly number: _angular_core.ModelSignal<string>;
+    /** The suffix as typed or picked, with its dash. */
+    readonly suffix: _angular_core.ModelSignal<string>;
+    /** Whether the full ID is already used. */
+    readonly duplicateChange: _angular_core.OutputEmitterRef<boolean>;
+    /** Focus left the whole ID control: number, suffix (and its dropdown) and regenerate button. */
+    readonly blurred: _angular_core.OutputEmitterRef<void>;
+    protected readonly isSuffixEditable: _angular_core.Signal<boolean>;
+    protected readonly suffixOptions: _angular_core.Signal<string[] | null>;
+    protected readonly suffixLetter: _angular_core.Signal<string | null>;
+    /** The input's limit: the configured characters plus the dash it starts with. */
+    protected readonly suffixMaxLength: _angular_core.Signal<number | null>;
+    /** Whether the ID has a prefix or suffix to show around the number (and so a preview line).
+        Generating and checking do not depend on it: a number-only ID uses the lookup too. */
+    protected readonly isAffixed: _angular_core.Signal<boolean>;
+    /** The prefix and suffix the ID is built from: the typed suffix when it is editable. */
+    readonly effectiveAffixes: _angular_core.Signal<IdAffixes>;
+    /** The full ID, with `#` standing in for a number not yet filled. */
+    protected readonly preview: _angular_core.Signal<string>;
+    protected readonly fullId: _angular_core.Signal<string>;
+    protected readonly generating: _angular_core.WritableSignal<boolean>;
+    protected readonly generationFailed: _angular_core.WritableSignal<boolean>;
+    protected readonly checking: _angular_core.WritableSignal<boolean>;
+    protected readonly checkFailed: _angular_core.WritableSignal<boolean>;
+    protected readonly duplicate: _angular_core.WritableSignal<boolean>;
+    /** Whether the hint has a message. An empty hint stays in the DOM (it is the input's
+        `aria-describedby` and an `aria-live` region) but takes no space. */
+    protected readonly hasHint: _angular_core.Signal<boolean>;
+    private numberEdited;
+    private resolvedSuffix;
+    constructor();
+    /** Replaces the number with a freshly generated one. */
+    protected regenerate(): void;
+    /** Keeps the number to digits (no leading zeros), and remembers the user typed it. */
+    protected onNumberInput(input: HTMLInputElement): void;
+    /** Without a dash before it, a suffix may not start with a digit: `12` + `3` would read back as
+        the number `123`. Such digits are dropped as they are typed. */
+    protected onSuffixInput(input: HTMLInputElement): void;
+    /** Emits `blurred` once focus leaves the whole control. Moving between the number, the suffix,
+        its body-mounted dropdown and the regenerate button is not leaving it. */
+    protected onFocusOut(event: FocusEvent): void;
+    /** The suffix dropdown closed: when focus did not come back into the control, the user left it. */
+    protected onSuffixOverlayHide(): void;
+    private holdsFocus;
+    /** A finished suffix gets its own next number, unless the user typed the number. */
+    protected onSuffixCommit(): void;
+    /** A letter picked from the suffix dropdown becomes the suffix, after its dash. */
+    protected onSuffixLetter(letter: string | null): void;
+    /** Sets the suffix from outside the user's typing; a dropdown keeps only a letter it offers. */
+    private setSuffix;
+    /** Fills the number with the next free one. Skipped without a lookup, or when the user typed a
+        number and `force` is off. A number carried in is kept by turning `autoGenerate` off. */
+    private generate;
+    static ɵfac: _angular_core.ɵɵFactoryDeclaration<AffixedIdInputComponent, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<AffixedIdInputComponent, "vcr-affixed-id-input", never, { "affixes": { "alias": "affixes"; "required": false; "isSignal": true; }; "lookup": { "alias": "lookup"; "required": false; "isSignal": true; }; "autoGenerate": { "alias": "autoGenerate"; "required": false; "isSignal": true; }; "inputId": { "alias": "inputId"; "required": false; "isSignal": true; }; "placeholder": { "alias": "placeholder"; "required": false; "isSignal": true; }; "entityLabel": { "alias": "entityLabel"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "ownValue": { "alias": "ownValue"; "required": false; "isSignal": true; }; "number": { "alias": "number"; "required": false; "isSignal": true; }; "suffix": { "alias": "suffix"; "required": false; "isSignal": true; }; }, { "number": "numberChange"; "suffix": "suffixChange"; "duplicateChange": "duplicateChange"; "blurred": "blurred"; }, never, never, true, never>;
 }
 
 /**
@@ -2384,6 +2686,11 @@ declare function isFieldRendererRegistered(fieldType: string): boolean;
  */
 declare function isUrlField(fieldType: string, fieldConfig: string | null): boolean;
 /**
+ * The input type a text field actually behaves as: `text` while its ID format is on, because the
+ * ID control replaces the input type (an `OFF-1` is neither an address nor a link).
+ */
+declare function effectiveTextInputType(config: TextFieldConfig): TextFieldConfig['inputType'];
+/**
  * Whether `<vcr-field-input [showActions]="true">` draws its own ✕/✓ for this field — today a
  * `TextArea` with `wysiwyg` on, in its toolbar. A host that edits in place asks this to decide
  * whether to keep drawing its own pair beside the control.
@@ -2566,6 +2873,17 @@ declare class FieldInputComponent {
     readonly required: _angular_core.InputSignal<boolean>;
     readonly disabled: _angular_core.InputSignal<boolean>;
     readonly invalid: _angular_core.InputSignal<boolean>;
+    /**
+     * How large the control is drawn, overriding the size in the field's own `fieldConfig`.
+     *
+     * **Unset by default, and unset means "no change".** Each field type already carries a `size` in
+     * its config (`'small'` when the saved config does not say; a config saved as `''` means
+     * `'medium'`), and that is what a host got before this input existed — so leaving it unset keeps
+     * every existing host's rendering exactly as it was, whichever size each field was authored at.
+     * Set it only to draw a set of fields at one size regardless of how they were configured. It has
+     * no effect on a field type with no size (`DatePicker`, `Media`).
+     */
+    readonly size: _angular_core.InputSignal<"small" | "medium" | "large" | undefined>;
     /** The wire value — a string for every field type, whatever the control works in. */
     readonly value: _angular_core.ModelSignal<string>;
     /**
@@ -2593,6 +2911,17 @@ declare class FieldInputComponent {
     readonly saveRequested: _angular_core.OutputEmitterRef<void>;
     /** Re-emitted from the renderer's ✕. Silent for a renderer that draws none. */
     readonly cancelRequested: _angular_core.OutputEmitterRef<void>;
+    /**
+     * For a `Text` field with an ID format: the lookup that generates and checks IDs, and how to read
+     * a prefix or suffix bound to page state. Ignored by every other field. See `FieldIdContext`.
+     */
+    readonly idContext: _angular_core.InputSignal<FieldIdContext | null>;
+    /** `idContext` as the renderer gets it: messages name the ID after the field's label unless
+        the host gave `entityLabel`. */
+    private readonly rendererIdContext;
+    /** Whether the ID typed is already used, as `idContext.lookup` answers. Silent for any other
+        field, or without a lookup. A host can hold its save while this is true. */
+    readonly duplicateChange: _angular_core.OutputEmitterRef<boolean>;
     /** Where the chosen renderer is created. Absent while the field type is unregistered, since
         the anchor only exists inside that branch of the template. */
     private readonly anchor;
@@ -2638,7 +2967,7 @@ declare class FieldInputComponent {
      */
     private commit;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<FieldInputComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "showActions": { "alias": "showActions"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; "optionAdded": "optionAdded"; "saveRequested": "saveRequested"; "cancelRequested": "cancelRequested"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldInputComponent, "vcr-field-input", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "invalid": { "alias": "invalid"; "required": false; "isSignal": true; }; "size": { "alias": "size"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; "showActions": { "alias": "showActions"; "required": false; "isSignal": true; }; "idContext": { "alias": "idContext"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "blurred": "blurred"; "optionAdded": "optionAdded"; "saveRequested": "saveRequested"; "cancelRequested": "cancelRequested"; "duplicateChange": "duplicateChange"; }, never, never, true, never>;
 }
 
 /**
@@ -2687,6 +3016,8 @@ declare class FieldValueComponent {
     readonly disabled: _angular_core.InputSignal<boolean>;
     /** Never enters edit mode — the value reads as text and nothing invites a click. */
     readonly readonly: _angular_core.InputSignal<boolean>;
+    /** Passed to the control while editing — see `FieldInputComponent.idContext`. */
+    readonly idContext: _angular_core.InputSignal<FieldIdContext | null>;
     /** The wire value. Written only when an edit is committed, never on open or cancel. */
     readonly value: _angular_core.ModelSignal<string>;
     /**
@@ -2752,8 +3083,8 @@ declare class FieldValueComponent {
     onKeydown(event: KeyboardEvent): void;
     onReadKeydown(event: KeyboardEvent): void;
     static ɵfac: _angular_core.ɵɵFactoryDeclaration<FieldValueComponent, never>;
-    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldValueComponent, "vcr-field-value", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "readonly": { "alias": "readonly"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "committed": "committed"; }, never, never, true, never>;
+    static ɵcmp: _angular_core.ɵɵComponentDeclaration<FieldValueComponent, "vcr-field-value", never, { "fieldType": { "alias": "fieldType"; "required": true; "isSignal": true; }; "fieldConfig": { "alias": "fieldConfig"; "required": false; "isSignal": true; }; "fieldKey": { "alias": "fieldKey"; "required": false; "isSignal": true; }; "label": { "alias": "label"; "required": false; "isSignal": true; }; "showLabel": { "alias": "showLabel"; "required": false; "isSignal": true; }; "required": { "alias": "required"; "required": false; "isSignal": true; }; "disabled": { "alias": "disabled"; "required": false; "isSignal": true; }; "readonly": { "alias": "readonly"; "required": false; "isSignal": true; }; "idContext": { "alias": "idContext"; "required": false; "isSignal": true; }; "value": { "alias": "value"; "required": false; "isSignal": true; }; }, { "value": "valueChange"; "committed": "committed"; }, never, never, true, never>;
 }
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, fieldInputDrawsActions, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, richTextToolbarButtons, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml, withChoiceOptionAdded };
-export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldControlOrigin, FieldControlSource, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, ResolvedFieldControl, RichTextToolbarButtons, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextInputType, TextareaFieldConfig };
+export { AffixedIdInputComponent, CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DEFAULT_TEXT_ID_FORMAT, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, ID_FORMAT_PARTS, ID_SUFFIX_INPUTS, ID_SUFFIX_LETTERS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, composeId, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, effectiveTextInputType, eraseFieldRenderer, fieldInputDrawsActions, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, hasIdAffixes, idAffixFallbackText, idFormatIssue, idFormatPreview, idParts, idPartsOfValue, isCurrencyCodeShaped, isFieldRendererRegistered, isIdFormatValid, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, numberOfId, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextIdFormat, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, resolveIdAffixes, richTextToPlainText, richTextToolbarButtons, sanitizeEditableSuffix, sanitizeIdNumber, selectFieldRenderer, sortChoiceOptions, splitEditableSuffix, splitIdValue, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml, withChoiceOptionAdded };
+export type { CheckboxFieldConfig, CheckboxFieldValue, CheckboxType, ChoiceOrientation, ChoiceSort, ConfigSelectOption, ConfigSelectOptionGroup, CurrencyDisplay, CurrencyFieldConfig, DateFieldConfig, DateFieldValue, DateIconDisplay, DateLimit, DateSelectionMode, DateView, ErasedFieldRendererDescriptor, FieldChoiceOption, FieldConfigExtras, FieldControlOrigin, FieldControlSource, FieldIdContext, FieldInputSize, FieldRenderer, FieldRendererConfigMap, FieldRendererDescriptor, FieldRendererKind, FieldRendererValueMap, FieldValueCodec, HourFormat, IdAffixValue, IdAffixes, IdFormatPart, IdFormatPartField, IdLookup, IdSuffixInput, LabelPosition, MediaFieldConfig, MediaFileExtension, MediaPreviewSize, NumberButtonLayout, NumberFieldConfig, NumberNegativeFormat, NumberRoundingRule, RadioFieldConfig, ResolvedFieldControl, RichTextToolbarButtons, SelectFieldConfig, SelectFieldValue, SelectMode, StoredFieldInputSize, TextAffixMode, TextFieldConfig, TextIdFormat, TextInputType, TextareaFieldConfig };

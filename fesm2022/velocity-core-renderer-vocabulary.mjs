@@ -42,9 +42,12 @@ const FieldDefinitionTypes = {
     Calculated: 'Calculated',
     BasicTable: 'basic-table',
     DataTable: 'DataTable',
+    DataTableExpandable: 'DataTableExpandable',
     DataList: 'DataList',
+    DateList: 'DateList',
     DataTableFilter: 'DataTableFilter',
     DataTablePageHeader: 'DataTablePageHeader',
+    GlobalSearch: 'GlobalSearch',
     Metric: 'Metric',
     Timeline: 'Timeline',
     Notice: 'Notice',
@@ -59,6 +62,7 @@ const FieldDefinitionTypes = {
     MarketResearchList: 'MarketResearchList',
     MarketResearchDetails: 'MarketResearchDetails',
     AddPropertyDialog: 'AddPropertyDialog',
+    AddPropertyDialogV2: 'AddPropertyDialogV2',
     AddLeaseDialog: 'AddLeaseDialog',
     AddSimpleRecordDialog: 'AddSimpleRecordDialog',
     AddLeaseRecordDialog: 'AddLeaseRecordDialog',
@@ -71,8 +75,12 @@ const FieldDefinitionTypes = {
     Documents: 'Documents',
     LeaseDocument: 'LeaseDocument',
     AbstractSummary: 'AbstractSummary',
+    NewLeaseWizard: 'NewLeaseWizard',
+    NewLeaseWizardV2: 'NewLeaseWizardV2',
+    FinancialsTable: 'FinancialsTable',
     Tasks: 'Tasks',
     Contacts: 'Contacts',
+    KeHEPortfolioDashboard: 'keHE Portfolio Dashboard',
     Date: 'Date',
     DateTime: 'DateTime',
     Select: 'Select',
@@ -103,8 +111,8 @@ const FieldDefinitionTypes = {
  * The {@link FieldValueType}s hold a value, and all of them but `Calculated` have a typed
  * renderer. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
- * touching them, and configured in the admin by a dedicated component each except `Notes`,
- * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.
+ * touching them. The admin gives configured widgets a dedicated component and keeps settings-free
+ * widgets in the Unconfigured group.
  *
  * Order is the menu order, authored in groups — the primitives first, then the page-level widgets.
  * The admin sorts a copy alphabetically for display; do not re-sort in place.
@@ -123,9 +131,12 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Calculated Fields', value: 'Calculated' },
     { label: 'Basic Table', value: 'basic-table' },
     { label: 'Data Table', value: 'DataTable' },
+    { label: 'Data Table Expandable', value: 'DataTableExpandable' },
     { label: 'Data List', value: 'DataList' },
+    { label: 'Date List', value: 'DateList' },
     { label: 'Data Table Filter', value: 'DataTableFilter' },
     { label: 'Data Table Page Header', value: 'DataTablePageHeader' },
+    { label: 'Global Search', value: 'GlobalSearch' },
     { label: 'Metric', value: 'Metric' },
     { label: 'Timeline', value: 'Timeline' },
     { label: 'Notice', value: 'Notice' },
@@ -140,6 +151,7 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Market Research List', value: 'MarketResearchList' },
     { label: 'Market Research Details', value: 'MarketResearchDetails' },
     { label: 'Add Property Dialog', value: 'AddPropertyDialog' },
+    { label: 'Add Property Dialog V2', value: 'AddPropertyDialogV2' },
     { label: 'Add Lease Dialog', value: 'AddLeaseDialog' },
     { label: 'Add Simple Record Dialog', value: 'AddSimpleRecordDialog' },
     { label: 'Add Lease Record Dialog', value: 'AddLeaseRecordDialog' },
@@ -155,8 +167,12 @@ const FIELD_TYPE_OPTIONS = [
     { label: 'Documents', value: 'Documents' },
     { label: 'Lease Document', value: 'LeaseDocument' },
     { label: 'Abstract Summary', value: 'AbstractSummary' },
+    { label: 'New Lease Wizard', value: 'NewLeaseWizard' },
+    { label: 'New Lease Wizard V2', value: 'NewLeaseWizardV2' },
+    { label: 'Financials Table', value: 'FinancialsTable' },
     { label: 'Tasks', value: 'Tasks' },
     { label: 'Contacts', value: 'Contacts' },
+    { label: 'keHE Portfolio Dashboard', value: 'keHE Portfolio Dashboard' },
 ];
 /**
  * Menu labels for the types no longer offered above — see {@link RetiredFieldDefinitionType} for
@@ -259,6 +275,51 @@ function isPackageEditableFieldType(fieldType) {
         !PLACEHOLDER_FIELD_TYPES.includes(fieldType));
 }
 
+const FORM_CONTROL_EVENT_NAMES = ['field.change', 'field.blur', 'field.loaded'];
+const FORM_CONTROL_EVENTS = [
+    {
+        name: 'field.change',
+        label: 'Change',
+        description: 'The value changed. In a form or dialog it fires on every edit; on a record page it fires once ' +
+            'the edit is saved, with the saved value.',
+    },
+    {
+        name: 'field.blur',
+        label: 'Blur',
+        description: 'The user left the control, with the value it settled on.',
+    },
+    {
+        name: 'field.loaded',
+        label: 'Loaded',
+        description: 'The field was first drawn with its stored (or default) value, so page state can start from it.',
+    },
+];
+/** The `fieldConfig` member a form-control field's bindings are saved under. */
+const FORM_CONTROL_EVENT_BINDINGS_KEY = 'eventBindings';
+/**
+ * The `fieldConfig` member a form-control field's "Bind to page state" is saved under — the same
+ * State Key / Expression + Default Value binding a DataTablePageHeader title has. While what it
+ * reads has a value, the field takes that value: a form or add-record dialog submits it (unless the
+ * user types over it); a record page only shows it in place of the saved value, temporarily —
+ * nothing is saved, and a reload shows the saved value again. Until then the field shows its saved
+ * value, else `defaultValue` (blank = the field's usual default).
+ */
+const FORM_CONTROL_VALUE_BINDING_KEY = 'valueBinding';
+/** Reads a saved value binding, or null when there is none or it names nothing. */
+function parseFormControlValueBinding(raw) {
+    if (typeof raw !== 'object' || raw === null)
+        return null;
+    const { source, stateKey, template, defaultValue: rawDefault } = raw;
+    const defaultValue = typeof rawDefault === 'string' ? rawDefault : '';
+    if (source === 'state' && typeof stateKey === 'string' && stateKey.trim() !== '') {
+        return { source, stateKey: stateKey.trim(), defaultValue };
+    }
+    if (source === 'expression' && typeof template === 'string' && template.trim() !== '') {
+        return { source, template, defaultValue };
+    }
+    return null;
+}
+
 /*
  * Public API Surface of velocity-core-renderer/vocabulary
  *
@@ -274,5 +335,5 @@ function isPackageEditableFieldType(fieldType) {
  * Generated bundle index. Do not edit.
  */
 
-export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, PLACEHOLDER_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageEditableFieldType, isPackageRenderedFieldType, retiredFieldTypeLabel };
+export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FORM_CONTROL_EVENTS, FORM_CONTROL_EVENT_BINDINGS_KEY, FORM_CONTROL_EVENT_NAMES, FORM_CONTROL_VALUE_BINDING_KEY, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, PLACEHOLDER_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageEditableFieldType, isPackageRenderedFieldType, parseFormControlValueBinding, retiredFieldTypeLabel };
 //# sourceMappingURL=velocity-core-renderer-vocabulary.mjs.map

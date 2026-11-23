@@ -1,6 +1,6 @@
 {
   "name": "velocity-core-renderer",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Shared field-definition-type renderers and list-screen UI for the Velocity Core platform.",
   "license": "UNLICENSED",
   "homepage": "https://github.com/MaleBug/velocity-core-renderer",
@@ -15,7 +15,8 @@
     "@angular/forms": "^21.2.0",
     "@angular/platform-browser": "^21.2.0",
     "primeng": "^21.1.6",
-    "primeicons": "^7.0.0"
+    "primeicons": "^7.0.0",
+    "rxjs": "^7.4.0"
   },
   "dependencies": {
     "tslib": "^2.3.0"

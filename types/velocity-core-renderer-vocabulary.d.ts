@@ -37,14 +37,13 @@ type FieldValueType = 'Text' | 'TextArea' | 'Number' | 'Decimal' | 'Currency' | 
  * one. They are listed here anyway because the admin authors them, so their spellings are shared
  * contract even though their components are not.
  *
- * `Notes`, `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts` go one step further than
- * their neighbours: they have no config component either, in this package or in the admin.
- * Placing one on a page is the whole of its authoring, so the admin's Config tab says so in a
- * line of text where the others show a picker. They are offered now so pages can be
- * composed ahead of the widgets being built, and each grows a config the day it has a setting
- * worth authoring.
+ * Settings-free widgets have no config component in this package or the admin. Placing one on a
+ * page is the whole of its authoring, so the admin's Config tab says so. They are offered now so
+ * pages can be composed ahead of the widgets being built, and each grows a config the day it has
+ * a setting worth authoring. `keHE Portfolio Dashboard` has one admin-owned setting: its source
+ * object, stored as the field definition's `relatedObjectSlug`.
  */
-type PageWidgetType = 'basic-table' | 'DataTable' | 'DataList' | 'DataTableFilter' | 'DataTablePageHeader' | 'Metric' | 'Timeline' | 'Notice' | 'NoticeList' | 'CustomObjectDataPoint' | 'CustomObjectDataPointMultiple' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'AddLeaseAdHocChargesRecordDialog' | 'AddLeaseScheduledBasePaymentsRecordDialog' | 'AddLeaseCriticalScheduleRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'LeaseDocument' | 'AbstractSummary' | 'Tasks' | 'Contacts';
+type PageWidgetType = 'basic-table' | 'DataTable' | 'DataTableExpandable' | 'DataList' | 'DateList' | 'DataTableFilter' | 'DataTablePageHeader' | 'GlobalSearch' | 'Metric' | 'Timeline' | 'Notice' | 'NoticeList' | 'CustomObjectDataPoint' | 'CustomObjectDataPointMultiple' | 'EsriMapV3' | 'GoogleMap' | 'MiniMap' | 'SiteSelectionList' | 'SiteSelectionDetails' | 'MarketResearchList' | 'MarketResearchDetails' | 'AddPropertyDialog' | 'AddPropertyDialogV2' | 'AddLeaseDialog' | 'AddSimpleRecordDialog' | 'AddLeaseRecordDialog' | 'AddLeaseAdHocChargesRecordDialog' | 'AddLeaseScheduledBasePaymentsRecordDialog' | 'AddLeaseCriticalScheduleRecordDialog' | 'Notes' | 'SitePlan' | 'Gallery' | 'Documents' | 'LeaseDocument' | 'AbstractSummary' | 'NewLeaseWizard' | 'NewLeaseWizardV2' | 'FinancialsTable' | 'Tasks' | 'Contacts' | 'keHE Portfolio Dashboard';
 /**
  * Types no longer offered in the admin's menu, but still held by fields saved before they were
  * withdrawn.
@@ -98,9 +97,12 @@ declare const FieldDefinitionTypes: {
     readonly Calculated: "Calculated";
     readonly BasicTable: "basic-table";
     readonly DataTable: "DataTable";
+    readonly DataTableExpandable: "DataTableExpandable";
     readonly DataList: "DataList";
+    readonly DateList: "DateList";
     readonly DataTableFilter: "DataTableFilter";
     readonly DataTablePageHeader: "DataTablePageHeader";
+    readonly GlobalSearch: "GlobalSearch";
     readonly Metric: "Metric";
     readonly Timeline: "Timeline";
     readonly Notice: "Notice";
@@ -115,6 +117,7 @@ declare const FieldDefinitionTypes: {
     readonly MarketResearchList: "MarketResearchList";
     readonly MarketResearchDetails: "MarketResearchDetails";
     readonly AddPropertyDialog: "AddPropertyDialog";
+    readonly AddPropertyDialogV2: "AddPropertyDialogV2";
     readonly AddLeaseDialog: "AddLeaseDialog";
     readonly AddSimpleRecordDialog: "AddSimpleRecordDialog";
     readonly AddLeaseRecordDialog: "AddLeaseRecordDialog";
@@ -127,8 +130,12 @@ declare const FieldDefinitionTypes: {
     readonly Documents: "Documents";
     readonly LeaseDocument: "LeaseDocument";
     readonly AbstractSummary: "AbstractSummary";
+    readonly NewLeaseWizard: "NewLeaseWizard";
+    readonly NewLeaseWizardV2: "NewLeaseWizardV2";
+    readonly FinancialsTable: "FinancialsTable";
     readonly Tasks: "Tasks";
     readonly Contacts: "Contacts";
+    readonly KeHEPortfolioDashboard: "keHE Portfolio Dashboard";
     readonly Date: "Date";
     readonly DateTime: "DateTime";
     readonly Select: "Select";
@@ -159,8 +166,8 @@ declare const FieldDefinitionTypes: {
  * The {@link FieldValueType}s hold a value, and all of them but `Calculated` have a typed
  * renderer. The rest are
  * {@link PageWidgetType} — drawn by their own branch in the client, with nothing in this package
- * touching them, and configured in the admin by a dedicated component each except `Notes`,
- * `SitePlan`, `Gallery`, `Documents`, `Tasks` and `Contacts`, which have nothing to configure yet.
+ * touching them. The admin gives configured widgets a dedicated component and keeps settings-free
+ * widgets in the Unconfigured group.
  *
  * Order is the menu order, authored in groups — the primitives first, then the page-level widgets.
  * The admin sorts a copy alphabetically for display; do not re-sort in place.
@@ -229,5 +236,46 @@ declare const PLACEHOLDER_FIELD_TYPES: readonly FieldDefinitionType[];
     an author choosing a data point control should be offered. */
 declare function isPackageEditableFieldType(fieldType: string): boolean;
 
-export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, PLACEHOLDER_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageEditableFieldType, isPackageRenderedFieldType, retiredFieldTypeLabel };
-export type { FieldDefinitionType, FieldValueType, PageWidgetType, RetiredFieldDefinitionType };
+/**
+ * The events every form-control field (one the renderer package draws: Text, Number, Dropdown,
+ * DatePicker, Checkbox, …) can write into page state. Bindings are configured on the field itself
+ * (`fieldConfig.eventBindings`, the same `source`-based shape a Data Table's `rowEvents` use), so
+ * the field publishes them wherever a host draws it — a record page, an add-record dialog, the Add
+ * Property dialog. Every payload is `{ value }`, the stored wire string.
+ *
+ * Angular-free, so both apps read the same spellings without pulling in the renderers.
+ */
+interface FormControlEventDefinition {
+    name: FormControlEventName;
+    label: string;
+    description: string;
+}
+declare const FORM_CONTROL_EVENT_NAMES: readonly ["field.change", "field.blur", "field.loaded"];
+type FormControlEventName = (typeof FORM_CONTROL_EVENT_NAMES)[number];
+declare const FORM_CONTROL_EVENTS: readonly FormControlEventDefinition[];
+/** The `fieldConfig` member a form-control field's bindings are saved under. */
+declare const FORM_CONTROL_EVENT_BINDINGS_KEY = "eventBindings";
+/**
+ * The `fieldConfig` member a form-control field's "Bind to page state" is saved under — the same
+ * State Key / Expression + Default Value binding a DataTablePageHeader title has. While what it
+ * reads has a value, the field takes that value: a form or add-record dialog submits it (unless the
+ * user types over it); a record page only shows it in place of the saved value, temporarily —
+ * nothing is saved, and a reload shows the saved value again. Until then the field shows its saved
+ * value, else `defaultValue` (blank = the field's usual default).
+ */
+declare const FORM_CONTROL_VALUE_BINDING_KEY = "valueBinding";
+/** A form-control field's saved value binding. */
+type FormControlValueBinding = {
+    source: 'state';
+    stateKey: string;
+    defaultValue: string;
+} | {
+    source: 'expression';
+    template: string;
+    defaultValue: string;
+};
+/** Reads a saved value binding, or null when there is none or it names nothing. */
+declare function parseFormControlValueBinding(raw: unknown): FormControlValueBinding | null;
+
+export { DEFAULT_FIELD_TYPE, FIELD_TYPE_OPTIONS, FORM_CONTROL_EVENTS, FORM_CONTROL_EVENT_BINDINGS_KEY, FORM_CONTROL_EVENT_NAMES, FORM_CONTROL_VALUE_BINDING_KEY, FieldDefinitionTypes, PACKAGE_RENDERED_FIELD_TYPES, PLACEHOLDER_FIELD_TYPES, RETIRED_FIELD_TYPE_LABELS, isPackageEditableFieldType, isPackageRenderedFieldType, parseFormControlValueBinding, retiredFieldTypeLabel };
+export type { FieldDefinitionType, FieldValueType, FormControlEventDefinition, FormControlEventName, FormControlValueBinding, PageWidgetType, RetiredFieldDefinitionType };

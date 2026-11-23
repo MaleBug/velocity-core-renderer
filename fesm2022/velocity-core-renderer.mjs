@@ -2,12 +2,12 @@ import { DEFAULT_FIELD_TYPE } from 'velocity-core-renderer/vocabulary';
 export * from 'velocity-core-renderer/vocabulary';
 export * from 'velocity-core-renderer/expression';
 import * as i0 from '@angular/core';
-import { input, model, output, computed, signal, ChangeDetectionStrategy, Component, inject, viewChild, afterRenderEffect, SecurityContext, linkedSignal, effect, untracked, reflectComponentType, ViewContainerRef, inputBinding, outputBinding } from '@angular/core';
+import { inject, ElementRef, input, model, output, computed, signal, effect, untracked, ChangeDetectionStrategy, Component, linkedSignal, viewChild, afterRenderEffect, SecurityContext, reflectComponentType, ViewContainerRef, inputBinding, outputBinding } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import * as i1 from '@angular/forms';
 import { FormsModule } from '@angular/forms';
 import * as i2 from 'primeng/button';
-import { ButtonModule } from 'primeng/button';
+import { ButtonDirective, ButtonModule } from 'primeng/button';
 import { IconField } from 'primeng/iconfield';
 import { InputGroup } from 'primeng/inputgroup';
 import { InputGroupAddon } from 'primeng/inputgroupaddon';
@@ -15,13 +15,16 @@ import { InputIcon } from 'primeng/inputicon';
 import { InputMask } from 'primeng/inputmask';
 import { InputText } from 'primeng/inputtext';
 import { Password } from 'primeng/password';
+import { toObservable, takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Select } from 'primeng/select';
+import { Tooltip } from 'primeng/tooltip';
+import { distinctUntilChanged, switchMap, of, timer, tap, catchError } from 'rxjs';
 import { Textarea } from 'primeng/textarea';
 import { DomSanitizer } from '@angular/platform-browser';
 import { InputNumber } from 'primeng/inputnumber';
 import { Checkbox } from 'primeng/checkbox';
 import { RadioButton } from 'primeng/radiobutton';
 import { MultiSelect } from 'primeng/multiselect';
-import { Select } from 'primeng/select';
 import { DatePicker } from 'primeng/datepicker';
 
 /**
@@ -81,6 +84,9 @@ const RENDERER_BINDINGS = {
     showActions: 'showActions',
     saveRequested: 'saveRequested',
     cancelRequested: 'cancelRequested',
+    /** See {@link FieldRenderer.idContext}. Optional, and bound like `showActions`. */
+    idContext: 'idContext',
+    duplicateChange: 'duplicateChange',
 };
 
 /**
@@ -781,6 +787,227 @@ function richTextToPlainText(html) {
         .trim();
 }
 
+/** What the user edits an editable suffix with: typed text, or one letter A-Z from a dropdown. */
+const ID_SUFFIX_INPUTS = ['text', 'dropdown'];
+/** The parts of an ID that can each also be saved to a field of their own. */
+const ID_FORMAT_PARTS = ['prefix', 'number', 'suffix'];
+const DEFAULT_TEXT_ID_FORMAT = {
+    addPrefix: false,
+    prefix: { source: 'literal', value: '' },
+    prefixSeparator: true,
+    prefixMaxLength: null,
+    addSuffix: false,
+    suffix: { source: 'literal', value: '' },
+    suffixSeparator: false,
+    suffixEditable: true,
+    suffixInput: 'text',
+    suffixMaxLength: null,
+    suffixLabel: '',
+    saveTo: { prefix: null, number: null, suffix: null },
+};
+/** A saved `idFormat`, or null when it is absent or not an object (the field is then plain text). */
+function parseTextIdFormat(raw) {
+    const source = readRecord(raw);
+    if (source === null)
+        return null;
+    const defaults = DEFAULT_TEXT_ID_FORMAT;
+    const saveTo = readRecord(source['saveTo']) ?? {};
+    return {
+        addPrefix: readBoolean(source['addPrefix'], defaults.addPrefix),
+        prefix: readAffixValue(source['prefix']),
+        prefixSeparator: readBoolean(source['prefixSeparator'], defaults.prefixSeparator),
+        prefixMaxLength: readPositiveLimit(source['prefixMaxLength']),
+        addSuffix: readBoolean(source['addSuffix'], defaults.addSuffix),
+        suffix: readAffixValue(source['suffix']),
+        suffixSeparator: readBoolean(source['suffixSeparator'], defaults.suffixSeparator),
+        suffixEditable: readBoolean(source['suffixEditable'], defaults.suffixEditable),
+        suffixInput: readOption(source['suffixInput'], ID_SUFFIX_INPUTS, defaults.suffixInput),
+        suffixMaxLength: readPositiveLimit(source['suffixMaxLength']),
+        suffixLabel: readString(source['suffixLabel'], defaults.suffixLabel),
+        saveTo: {
+            prefix: readPartField(saveTo['prefix']),
+            number: readPartField(saveTo['number']),
+            suffix: readPartField(saveTo['suffix']),
+        },
+    };
+}
+function readAffixValue(raw) {
+    const source = readRecord(raw);
+    if (source === null)
+        return typeof raw === 'string' ? { source: 'literal', value: raw } : { source: 'literal', value: '' };
+    const defaultValue = readString(source['defaultValue'], '');
+    switch (source['source']) {
+        case 'state':
+            return { source: 'state', stateKey: readString(source['stateKey'], ''), defaultValue };
+        case 'expression':
+            return { source: 'expression', template: readString(source['template'], ''), defaultValue };
+        default:
+            return { source: 'literal', value: readString(source['value'], '') };
+    }
+}
+function readPositiveLimit(raw) {
+    const value = readNullableNumber(raw, null);
+    return value !== null && Number.isInteger(value) && value >= 1 ? value : null;
+}
+function readPartField(raw) {
+    const source = readRecord(raw);
+    if (source === null)
+        return null;
+    const key = readString(source['key'], '');
+    const fieldDefinitionId = readString(source['fieldDefinitionId'], '');
+    if (key === '' || fieldDefinitionId === '')
+        return null;
+    return {
+        key,
+        fieldDefinitionId,
+        fieldType: readString(source['fieldType'], ''),
+        fieldConfig: typeof source['fieldConfig'] === 'string' ? source['fieldConfig'] : null,
+    };
+}
+/** The affix as a host without page state reads it: the literal value, or the bound default. */
+function idAffixFallbackText(value) {
+    return value.source === 'literal' ? value.value : value.defaultValue;
+}
+/** The suffix dropdown's options. */
+const ID_SUFFIX_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+/**
+ * The format resolved to locked text. `resolveText` reads a prefix or suffix (page state, `{{ }}`
+ * placeholders); it defaults to {@link idAffixFallbackText}. `lead` goes in front of the prefix,
+ * joined by nothing (pass its own dash), and is not part of the prefix saved on its own.
+ */
+function resolveIdAffixes(format, resolveText = idAffixFallbackText, lead = '') {
+    const dropdown = format.suffixEditable && format.suffixInput === 'dropdown';
+    const text = (value, max) => {
+        const resolved = resolveText(value).trim();
+        return max === null ? resolved : resolved.slice(0, max);
+    };
+    const prefix = format.addPrefix ? text(format.prefix, format.prefixMaxLength) : '';
+    const suffix = format.addSuffix ? text(format.suffix, dropdown ? null : format.suffixMaxLength) : '';
+    return {
+        prefix: lead + (prefix !== '' && format.prefixSeparator ? `${prefix}-` : prefix),
+        prefixLead: lead,
+        suffix: suffix !== '' && format.suffixSeparator ? `-${suffix}` : suffix,
+        suffixEditable: format.addSuffix && format.suffixEditable,
+        suffixDash: format.suffixSeparator ? '-' : '',
+        prefixDash: format.prefixSeparator ? '-' : '',
+        suffixLabel: format.addSuffix ? format.suffixLabel : '',
+        suffixMaxLength: dropdown ? null : format.suffixMaxLength,
+        suffixOptions: format.addSuffix && dropdown ? [...ID_SUFFIX_LETTERS] : undefined,
+    };
+}
+/** Joins the locked prefix, the number and the suffix. The affixes carry their dashes already. */
+function composeId(affixes, number) {
+    return `${affixes.prefix}${number}${affixes.suffix}`;
+}
+/** Whether the ID has a locked prefix and/or suffix around the number. */
+function hasIdAffixes(affixes) {
+    return affixes.prefix.trim() !== '' || affixes.suffix.trim() !== '';
+}
+/** Digits only, no leading zeros, at most 9 digits — what the number input accepts. */
+function sanitizeIdNumber(value) {
+    return value.replace(/\D/g, '').replace(/^0+/, '').slice(0, 9);
+}
+const ID_NUMBER = /^[1-9][0-9]{0,8}$/;
+/**
+ * The editable number inside a full ID, or '' when the ID does not carry these affixes (so a
+ * changed prefix never leaves the old number behind as if it were new).
+ */
+function numberOfId(id, affixes) {
+    if (!id.startsWith(affixes.prefix) || !id.endsWith(affixes.suffix))
+        return '';
+    const number = id.slice(affixes.prefix.length, id.length - affixes.suffix.length);
+    return ID_NUMBER.test(number) ? number : '';
+}
+/**
+ * An editable suffix as it may be stored: without a dash in front (`suffixDash` empty), leading
+ * digits are dropped, because they would read back as part of the number (`12` + `3` → `123`).
+ */
+function sanitizeEditableSuffix(suffix, suffixDash) {
+    return suffixDash === '' ? suffix.replace(/^\d+/, '') : suffix;
+}
+/**
+ * Splits a full ID into its number and the suffix that follows it, for an ID built with an
+ * editable suffix. Null when the ID does not start with the prefix or has no valid number after it.
+ */
+function splitEditableSuffix(id, prefix) {
+    if (!id.startsWith(prefix))
+        return null;
+    const match = /^([1-9][0-9]{0,8})(\D.*)?$/.exec(id.slice(prefix.length));
+    return match === null ? null : { number: match[1], suffix: match[2] ?? '' };
+}
+/**
+ * A stored ID read back into what the control edits: the number and (for an editable suffix) the
+ * suffix as typed. `{ number: '', suffix: '' }` for an empty value; null for a value these affixes
+ * cannot have built, which a host should show as it is rather than lose.
+ */
+function splitIdValue(value, affixes) {
+    if (value === '')
+        return { number: '', suffix: '' };
+    if (affixes.suffixEditable)
+        return splitEditableSuffix(value, affixes.prefix);
+    const number = numberOfId(value, affixes);
+    return number === '' ? null : { number, suffix: affixes.suffix };
+}
+/**
+ * The full ID and its parts as they are saved: the prefix and suffix without their dashes (and
+ * without any lead), the number as typed. The full ID is blank until a number is entered, so an
+ * empty input is never saved as a prefix alone.
+ */
+function idParts(number, suffix, affixes) {
+    const trimmed = number.trim();
+    const ownSuffix = affixes.suffixEditable ? suffix : affixes.suffix;
+    const lead = affixes.prefixLead ?? '';
+    const ownPrefix = affixes.prefix.startsWith(lead) ? affixes.prefix.slice(lead.length) : affixes.prefix;
+    const prefixDash = affixes.prefixDash ?? '';
+    const suffixDash = affixes.suffixDash ?? '';
+    return {
+        full: trimmed === '' ? '' : composeId({ prefix: affixes.prefix, suffix: ownSuffix }, trimmed),
+        prefix: prefixDash !== '' && ownPrefix.endsWith(prefixDash) ? ownPrefix.slice(0, -prefixDash.length) : ownPrefix,
+        number: trimmed,
+        suffix: suffixDash !== '' && ownSuffix.startsWith(suffixDash) ? ownSuffix.slice(suffixDash.length) : ownSuffix,
+    };
+}
+/** The parts of a stored full ID, or null when these affixes cannot have built it. */
+function idPartsOfValue(value, affixes) {
+    const split = splitIdValue(value, affixes);
+    return split === null ? null : idParts(split.number, split.suffix, affixes);
+}
+// ---------------------------------------------------------------------------------------------
+// Authoring checks
+/** Why the prefix or suffix cannot be saved yet, or null. Only the prefix needs a default. */
+function idFormatIssue(format, part) {
+    if (!(part === 'prefix' ? format.addPrefix : format.addSuffix))
+        return null;
+    const value = format[part];
+    if (value.source === 'state' && value.stateKey.trim() === '')
+        return 'Enter a state key.';
+    const text = idAffixFallbackText(value).trim();
+    if (part === 'prefix' && text === '')
+        return 'Enter a prefix.';
+    const dropdown = format.suffixEditable && format.suffixInput === 'dropdown';
+    // A placeholder such as {{ property.code }} is resolved later, so it is not held to a letter.
+    if (part === 'suffix' && dropdown && text !== '' && !text.includes('{{') && !/^[A-Za-z]$/.test(text)) {
+        return 'The default must be a single letter A-Z.';
+    }
+    // Without a dash, a suffix starting with a digit reads back as part of the number.
+    if (part === 'suffix' && format.suffixEditable && !dropdown && !format.suffixSeparator && /^\d/.test(text)) {
+        return 'Start the suffix with a letter, or add a dash before it.';
+    }
+    const max = part === 'prefix' ? format.prefixMaxLength : format.suffixMaxLength;
+    return max !== null && !text.includes('{{') && text.length > max ? `Use ${max} characters or fewer.` : null;
+}
+/** Whether the prefix and suffix settings can be saved. */
+function isIdFormatValid(format) {
+    return idFormatIssue(format, 'prefix') === null && idFormatIssue(format, 'suffix') === null;
+}
+/** An example ID from the format as configured (a bound value shows its default). */
+function idFormatPreview(format) {
+    const affixes = resolveIdAffixes({ ...format, prefixMaxLength: null, suffixMaxLength: null });
+    const dropdown = format.addSuffix && format.suffixEditable && format.suffixInput === 'dropdown';
+    const suffix = dropdown && affixes.suffix === '' ? `${affixes.suffixDash}A` : affixes.suffix;
+    return composeId({ prefix: affixes.prefix, suffix }, '1');
+}
+
 /**
  * What the browser should treat the input as.
  *
@@ -842,6 +1069,7 @@ const DEFAULT_TEXT_FIELD_CONFIG = {
     mask: '',
     showClear: false,
     size: 'small',
+    idFormat: null,
     extra: {},
 };
 /**
@@ -877,6 +1105,7 @@ function parseTextFieldConfig(json, defaults) {
         mask: readString(source['mask'], defaults.mask),
         showClear: readBoolean(source['showClear'], defaults.showClear),
         size: normalizeFieldInputSize(readOption(source['size'], STORED_FIELD_INPUT_SIZES, defaults.size)),
+        idFormat: source['idFormat'] === undefined ? defaults.idFormat : parseTextIdFormat(source['idFormat']),
         extra,
     };
 }
@@ -1704,6 +1933,239 @@ function parseFileExtensions(raw, fallback) {
     return MEDIA_FILE_EXTENSIONS.filter((extension) => stored.has(extension));
 }
 
+/** How long typing must pause before the typed ID is checked. */
+const ID_CHECK_DEBOUNCE_MS = 400;
+/**
+ * An ID built from a locked prefix, a number and an optional suffix (locked, typed, or picked from
+ * an A-Z dropdown): `OFF-` + `4` + `-US`. With a lookup, the next free number is generated, the
+ * user can change it, and a number already used is flagged. A failed lookup never blocks the user.
+ *
+ * What a `Text` field with an `idFormat` draws (see `TextFieldInputComponent`), and usable on its
+ * own by a host that edits the number and suffix separately.
+ */
+class AffixedIdInputComponent {
+    host = inject(ElementRef);
+    /** The locked prefix and suffix, already resolved and carrying their dashes. */
+    affixes = input({ prefix: '', suffix: '' }, ...(ngDevMode ? [{ debugName: "affixes" }] : /* istanbul ignore next */ []));
+    /** Generates and checks IDs. Without it the user types the number and nothing is pre-checked. */
+    lookup = input(null, ...(ngDevMode ? [{ debugName: "lookup" }] : /* istanbul ignore next */ []));
+    /**
+     * Whether an empty number is filled with the next free one as soon as the affixes are known.
+     * Off for a record that already has its ID, so opening it never proposes a new one; the
+     * regenerate button still works.
+     */
+    autoGenerate = input(true, ...(ngDevMode ? [{ debugName: "autoGenerate" }] : /* istanbul ignore next */ []));
+    inputId = input('affixed-id', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    placeholder = input('', ...(ngDevMode ? [{ debugName: "placeholder" }] : /* istanbul ignore next */ []));
+    /** What the ID is called in messages, e.g. `Lease Number`. */
+    entityLabel = input('ID', ...(ngDevMode ? [{ debugName: "entityLabel" }] : /* istanbul ignore next */ []));
+    /** Draws the field as invalid (a required error the parent shows). */
+    invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
+    /** An ID equal to this is the record's own, so it is never flagged as a duplicate. */
+    ownValue = input('', ...(ngDevMode ? [{ debugName: "ownValue" }] : /* istanbul ignore next */ []));
+    /** The number between the prefix and suffix. */
+    number = model('', ...(ngDevMode ? [{ debugName: "number" }] : /* istanbul ignore next */ []));
+    /** The suffix as typed or picked, with its dash. */
+    suffix = model('', ...(ngDevMode ? [{ debugName: "suffix" }] : /* istanbul ignore next */ []));
+    /** Whether the full ID is already used. */
+    duplicateChange = output();
+    /** Focus left the whole ID control: number, suffix (and its dropdown) and regenerate button. */
+    blurred = output();
+    isSuffixEditable = computed(() => this.affixes().suffixEditable === true, ...(ngDevMode ? [{ debugName: "isSuffixEditable" }] : /* istanbul ignore next */ []));
+    suffixOptions = computed(() => this.isSuffixEditable() ? (this.affixes().suffixOptions ?? null) : null, ...(ngDevMode ? [{ debugName: "suffixOptions" }] : /* istanbul ignore next */ []));
+    suffixLetter = computed(() => {
+        const options = this.suffixOptions();
+        if (options === null)
+            return null;
+        const dash = this.affixes().suffixDash ?? '';
+        const text = this.suffix();
+        const letter = (text.startsWith(dash) ? text.slice(dash.length) : text).toUpperCase();
+        return options.includes(letter) ? letter : null;
+    }, ...(ngDevMode ? [{ debugName: "suffixLetter" }] : /* istanbul ignore next */ []));
+    /** The input's limit: the configured characters plus the dash it starts with. */
+    suffixMaxLength = computed(() => {
+        const { suffixMaxLength, suffixDash } = this.affixes();
+        return suffixMaxLength == null ? null : suffixMaxLength + (suffixDash ?? '').length;
+    }, ...(ngDevMode ? [{ debugName: "suffixMaxLength" }] : /* istanbul ignore next */ []));
+    /** Whether the ID has a prefix or suffix to show around the number (and so a preview line).
+        Generating and checking do not depend on it: a number-only ID uses the lookup too. */
+    isAffixed = computed(() => hasIdAffixes(this.affixes()) || this.isSuffixEditable(), ...(ngDevMode ? [{ debugName: "isAffixed" }] : /* istanbul ignore next */ []));
+    /** The prefix and suffix the ID is built from: the typed suffix when it is editable. */
+    effectiveAffixes = computed(() => ({
+        prefix: this.affixes().prefix,
+        suffix: this.isSuffixEditable() ? this.suffix() : this.affixes().suffix,
+    }), ...(ngDevMode ? [{ debugName: "effectiveAffixes" }] : /* istanbul ignore next */ []));
+    /** The full ID, with `#` standing in for a number not yet filled. */
+    preview = computed(() => composeId(this.effectiveAffixes(), this.number().trim() === '' ? '#' : this.number().trim()), ...(ngDevMode ? [{ debugName: "preview" }] : /* istanbul ignore next */ []));
+    fullId = computed(() => composeId(this.effectiveAffixes(), this.number().trim()), ...(ngDevMode ? [{ debugName: "fullId" }] : /* istanbul ignore next */ []));
+    generating = signal(false, ...(ngDevMode ? [{ debugName: "generating" }] : /* istanbul ignore next */ []));
+    generationFailed = signal(false, ...(ngDevMode ? [{ debugName: "generationFailed" }] : /* istanbul ignore next */ []));
+    checking = signal(false, ...(ngDevMode ? [{ debugName: "checking" }] : /* istanbul ignore next */ []));
+    checkFailed = signal(false, ...(ngDevMode ? [{ debugName: "checkFailed" }] : /* istanbul ignore next */ []));
+    duplicate = signal(false, ...(ngDevMode ? [{ debugName: "duplicate" }] : /* istanbul ignore next */ []));
+    /** Whether the hint has a message. An empty hint stays in the DOM (it is the input's
+        `aria-describedby` and an `aria-live` region) but takes no space. */
+    hasHint = computed(() => this.duplicate() || this.checking() || this.generating() || this.generationFailed() || this.checkFailed(), ...(ngDevMode ? [{ debugName: "hasHint" }] : /* istanbul ignore next */ []));
+    numberEdited = false;
+    resolvedSuffix = null;
+    constructor() {
+        // A new resolved suffix replaces what was typed; the first one keeps a suffix carried in.
+        effect(() => {
+            const resolved = this.affixes().suffix;
+            untracked(() => {
+                if (this.resolvedSuffix === null && this.suffix() !== '') {
+                    this.resolvedSuffix = resolved;
+                    return;
+                }
+                if (this.resolvedSuffix !== resolved) {
+                    this.resolvedSuffix = resolved;
+                    // A saved ID opened unchanged keeps its suffix, so it is never rewritten without input.
+                    if (this.ownValue() !== '' && this.fullId() === this.ownValue())
+                        return;
+                    this.setSuffix(resolved);
+                }
+            });
+        });
+        // New affixes or a new lookup mean a new next number, unless the user typed one.
+        effect(() => {
+            this.affixes();
+            this.lookup();
+            const auto = this.autoGenerate();
+            untracked(() => {
+                if (auto)
+                    this.generate(false);
+            });
+        });
+        toObservable(computed(() => ({
+            lookup: this.lookup(),
+            id: this.fullId(),
+            own: this.ownValue(),
+            number: this.number().trim(),
+        })))
+            .pipe(distinctUntilChanged((a, b) => a.lookup === b.lookup && a.id === b.id && a.number === b.number && a.own === b.own), switchMap(({ lookup, id, own, number }) => {
+            if (lookup === null || number === '' || (own !== '' && id === own)) {
+                this.checking.set(false);
+                this.checkFailed.set(false);
+                return of(false);
+            }
+            this.checking.set(true);
+            return timer(ID_CHECK_DEBOUNCE_MS).pipe(switchMap(() => lookup.exists(id)), tap(() => this.checkFailed.set(false)), catchError(() => {
+                this.checkFailed.set(true);
+                return of(false);
+            }), tap(() => this.checking.set(false)));
+        }), takeUntilDestroyed())
+            .subscribe((exists) => {
+            this.duplicate.set(exists);
+            this.duplicateChange.emit(exists);
+        });
+    }
+    /** Replaces the number with a freshly generated one. */
+    regenerate() {
+        this.numberEdited = false;
+        this.generate(true);
+    }
+    /** Keeps the number to digits (no leading zeros), and remembers the user typed it. */
+    onNumberInput(input) {
+        const digits = sanitizeIdNumber(input.value);
+        if (digits !== input.value) {
+            const caret = digits.length - (input.value.length - (input.selectionStart ?? input.value.length));
+            input.value = digits;
+            const position = Math.max(0, Math.min(digits.length, caret));
+            input.setSelectionRange(position, position);
+        }
+        this.number.set(digits);
+        this.numberEdited = true;
+        this.generationFailed.set(false);
+    }
+    /** Without a dash before it, a suffix may not start with a digit: `12` + `3` would read back as
+        the number `123`. Such digits are dropped as they are typed. */
+    onSuffixInput(input) {
+        const value = sanitizeEditableSuffix(input.value, this.affixes().suffixDash ?? '');
+        if (value !== input.value)
+            input.value = value;
+        this.suffix.set(value);
+    }
+    /** Emits `blurred` once focus leaves the whole control. Moving between the number, the suffix,
+        its body-mounted dropdown and the regenerate button is not leaving it. */
+    onFocusOut(event) {
+        if (this.holdsFocus(event.relatedTarget))
+            return;
+        this.blurred.emit();
+    }
+    /** The suffix dropdown closed: when focus did not come back into the control, the user left it. */
+    onSuffixOverlayHide() {
+        setTimeout(() => {
+            if (!this.holdsFocus(document.activeElement))
+                this.blurred.emit();
+        });
+    }
+    holdsFocus(target) {
+        if (!(target instanceof Element))
+            return false;
+        return this.host.nativeElement.contains(target) || target.closest('.p-select-overlay') !== null;
+    }
+    /** A finished suffix gets its own next number, unless the user typed the number. */
+    onSuffixCommit() {
+        if (this.autoGenerate())
+            this.generate(false);
+    }
+    /** A letter picked from the suffix dropdown becomes the suffix, after its dash. */
+    onSuffixLetter(letter) {
+        this.suffix.set(letter ? `${this.affixes().suffixDash ?? ''}${letter}` : '');
+        if (this.autoGenerate())
+            this.generate(false);
+    }
+    /** Sets the suffix from outside the user's typing; a dropdown keeps only a letter it offers. */
+    setSuffix(text) {
+        const options = this.suffixOptions();
+        if (options === null) {
+            this.suffix.set(sanitizeEditableSuffix(text, this.affixes().suffixDash ?? ''));
+            return;
+        }
+        const dash = this.affixes().suffixDash ?? '';
+        const letter = (text.startsWith(dash) ? text.slice(dash.length) : text).toUpperCase();
+        this.suffix.set(options.includes(letter) ? `${dash}${letter}` : '');
+    }
+    /** Fills the number with the next free one. Skipped without a lookup, or when the user typed a
+        number and `force` is off. A number carried in is kept by turning `autoGenerate` off. */
+    generate(force) {
+        const lookup = this.lookup();
+        if (lookup === null || this.disabled())
+            return;
+        if (this.numberEdited && !force)
+            return;
+        const target = this.effectiveAffixes();
+        this.generating.set(true);
+        this.generationFailed.set(false);
+        lookup
+            .next(target)
+            .pipe(catchError(() => of(null)))
+            .subscribe((next) => {
+            this.generating.set(false);
+            const current = this.effectiveAffixes();
+            // Ignore an answer for affixes the user has since moved away from, or one that arrives
+            // after the user typed a number of their own.
+            if (target.prefix !== current.prefix || target.suffix !== current.suffix)
+                return;
+            if (this.numberEdited)
+                return;
+            const number = next === null ? '' : numberOfId(next, target);
+            if (number === '') {
+                this.generationFailed.set(true);
+                return;
+            }
+            this.number.set(number);
+        });
+    }
+    static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: AffixedIdInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: AffixedIdInputComponent, isStandalone: true, selector: "vcr-affixed-id-input", inputs: { affixes: { classPropertyName: "affixes", publicName: "affixes", isSignal: true, isRequired: false, transformFunction: null }, lookup: { classPropertyName: "lookup", publicName: "lookup", isSignal: true, isRequired: false, transformFunction: null }, autoGenerate: { classPropertyName: "autoGenerate", publicName: "autoGenerate", isSignal: true, isRequired: false, transformFunction: null }, inputId: { classPropertyName: "inputId", publicName: "inputId", isSignal: true, isRequired: false, transformFunction: null }, placeholder: { classPropertyName: "placeholder", publicName: "placeholder", isSignal: true, isRequired: false, transformFunction: null }, entityLabel: { classPropertyName: "entityLabel", publicName: "entityLabel", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, ownValue: { classPropertyName: "ownValue", publicName: "ownValue", isSignal: true, isRequired: false, transformFunction: null }, number: { classPropertyName: "number", publicName: "number", isSignal: true, isRequired: false, transformFunction: null }, suffix: { classPropertyName: "suffix", publicName: "suffix", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { number: "numberChange", suffix: "suffixChange", duplicateChange: "duplicateChange", blurred: "blurred" }, host: { listeners: { "focusout": "onFocusOut($event)" } }, ngImport: i0, template: "<p-inputgroup\n  class=\"affixed-id__group\"\n  [class.affixed-id__group--invalid]=\"invalid() || duplicate()\"\n>\n  @if (effectiveAffixes().prefix.trim() !== '') {\n    <p-inputgroup-addon class=\"affixed-id__affix affixed-id__prefix\">{{ effectiveAffixes().prefix }}</p-inputgroup-addon>\n  }\n  <input\n    pInputText\n    [id]=\"inputId()\"\n    type=\"text\"\n    inputmode=\"numeric\"\n    autocomplete=\"off\"\n    [placeholder]=\"placeholder()\"\n    [value]=\"number()\"\n    (input)=\"onNumberInput($any($event.target))\"\n    [disabled]=\"disabled()\"\n    [attr.aria-invalid]=\"invalid() || duplicate()\"\n    [attr.aria-describedby]=\"inputId() + '-hint'\"\n  />\n  @if (suffixOptions(); as letters) {\n    @if ((affixes().suffixDash ?? '') !== '') {\n      <p-inputgroup-addon class=\"affixed-id__affix\">{{ affixes().suffixDash }}</p-inputgroup-addon>\n    }\n    <p-select\n      class=\"affixed-id__suffix-select\"\n      [ngModel]=\"suffixLetter()\"\n      (ngModelChange)=\"onSuffixLetter($event)\"\n      [options]=\"letters\"\n      [filter]=\"true\"\n      [showClear]=\"true\"\n      [placeholder]=\"affixes().suffixLabel || '\u2013'\"\n      [ariaLabel]=\"affixes().suffixLabel || 'Suffix'\"\n      [disabled]=\"disabled()\"\n      appendTo=\"body\"\n      (onHide)=\"onSuffixOverlayHide()\"\n    />\n  } @else if (isSuffixEditable()) {\n    <input\n      pInputText\n      class=\"affixed-id__suffix-input\"\n      type=\"text\"\n      autocomplete=\"off\"\n      [attr.maxlength]=\"suffixMaxLength()\"\n      [attr.aria-label]=\"affixes().suffixLabel || 'Suffix'\"\n      [placeholder]=\"affixes().suffixLabel ?? ''\"\n      [value]=\"suffix()\"\n      (input)=\"onSuffixInput($any($event.target))\"\n      (change)=\"onSuffixCommit()\"\n      [disabled]=\"disabled()\"\n    />\n  } @else if (effectiveAffixes().suffix.trim() !== '') {\n    <p-inputgroup-addon class=\"affixed-id__affix\">{{ effectiveAffixes().suffix }}</p-inputgroup-addon>\n  }\n  @if (lookup() !== null) {\n    <p-inputgroup-addon>\n      <button\n        pButton\n        type=\"button\"\n        [text]=\"true\"\n        severity=\"secondary\"\n        aria-label=\"Generate a new number\"\n        pTooltip=\"Generate a new number\"\n        tooltipPosition=\"top\"\n        appendTo=\"body\"\n        [disabled]=\"generating() || disabled()\"\n        (click)=\"regenerate()\"\n      >\n        <i class=\"pi pi-refresh\" aria-hidden=\"true\"></i>\n      </button>\n    </p-inputgroup-addon>\n  }\n</p-inputgroup>\n@if (isAffixed()) {\n  <small class=\"affixed-id__preview\">{{ entityLabel() }}: <strong>{{ preview() }}</strong></small>\n}\n<small\n  [id]=\"inputId() + '-hint'\"\n  class=\"affixed-id__hint\"\n  [class.affixed-id__hint--error]=\"duplicate()\"\n  [class.affixed-id__hint--empty]=\"!hasHint()\"\n  aria-live=\"polite\"\n>\n  @if (duplicate()) {\n    {{ entityLabel() }} {{ fullId() }} already exists in this account.\n  } @else if (checking()) {\n    Checking\u2026\n  } @else if (generating()) {\n    Generating a number\u2026\n  } @else if (generationFailed()) {\n    Couldn\u2019t generate a number. Enter one manually.\n  } @else if (checkFailed()) {\n    Couldn\u2019t verify this {{ entityLabel() }}. It will be checked when you save.\n  }\n</small>\n", styles: [":host{display:flex;flex-direction:column;gap:4px;width:100%;min-width:0}.affixed-id__group{display:flex;flex-wrap:wrap;row-gap:4px}.affixed-id__group input{flex:1 1 3.5rem;min-width:3.5rem}.affixed-id__group .p-inputgroupaddon{flex:0 0 auto;min-width:2.25rem;padding-inline:.5rem}.affixed-id__group .affixed-id__suffix-input{flex:0 1 6rem;min-width:3rem}.affixed-id__group .affixed-id__suffix-select{flex:0 0 5rem;min-width:0}.affixed-id__group .affixed-id__suffix-select{display:inline-flex;align-items:center}.affixed-id__group .affixed-id__suffix-select ::ng-deep .p-select-label{display:flex;align-items:center;line-height:normal;padding-top:0;padding-bottom:0;padding-inline:.5rem}.affixed-id__group .affixed-id__suffix-select ::ng-deep .p-select-dropdown{width:2rem}.affixed-id__group--invalid input,.affixed-id__group--invalid .p-inputgroupaddon{border-color:var(--p-red-600, #dc2626)}.affixed-id__affix{white-space:nowrap;font-weight:600;letter-spacing:.03em;-webkit-user-select:none;user-select:none}.affixed-id__preview{color:var(--text-color, #334155);font-size:13px}.affixed-id__hint{min-height:16px;color:var(--surface-500, #64748b);font-size:12px}.affixed-id__hint--empty{position:absolute;width:1px;height:1px;min-height:0;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}.affixed-id__hint--error{color:var(--p-red-600, #dc2626)}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "component", type: InputGroup, selector: "p-inputgroup, p-inputGroup, p-input-group", inputs: ["styleClass"] }, { kind: "component", type: InputGroupAddon, selector: "p-inputgroup-addon, p-inputGroupAddon", inputs: ["style", "styleClass"] }, { kind: "directive", type: InputText, selector: "[pInputText]", inputs: ["hostName", "ptInputText", "pInputTextPT", "pInputTextUnstyled", "pSize", "variant", "fluid", "invalid"] }, { kind: "component", type: Select, selector: "p-select", inputs: ["id", "scrollHeight", "filter", "panelStyle", "styleClass", "panelStyleClass", "readonly", "editable", "tabindex", "placeholder", "loadingIcon", "filterPlaceholder", "filterLocale", "inputId", "dataKey", "filterBy", "filterFields", "autofocus", "resetFilterOnHide", "checkmark", "dropdownIcon", "loading", "optionLabel", "optionValue", "optionDisabled", "optionGroupLabel", "optionGroupChildren", "group", "showClear", "emptyFilterMessage", "emptyMessage", "lazy", "virtualScroll", "virtualScrollItemSize", "virtualScrollOptions", "overlayOptions", "ariaFilterLabel", "ariaLabel", "ariaLabelledBy", "filterMatchMode", "tooltip", "tooltipPosition", "tooltipPositionStyle", "tooltipStyleClass", "focusOnHover", "selectOnFocus", "autoOptionFocus", "autofocusFilter", "filterValue", "options", "appendTo", "motionOptions"], outputs: ["onChange", "onFilter", "onFocus", "onBlur", "onClick", "onShow", "onHide", "onClear", "onLazyLoad"] }, { kind: "directive", type: ButtonDirective, selector: "[pButton]", inputs: ["ptButtonDirective", "pButtonPT", "pButtonUnstyled", "hostName", "text", "plain", "raised", "size", "outlined", "rounded", "iconPos", "loadingIcon", "fluid", "label", "icon", "loading", "buttonProps", "severity"] }, { kind: "directive", type: Tooltip, selector: "[pTooltip]", inputs: ["tooltipPosition", "tooltipEvent", "positionStyle", "tooltipStyleClass", "tooltipZIndex", "escape", "showDelay", "hideDelay", "life", "positionTop", "positionLeft", "autoHide", "fitContent", "hideOnEscape", "showOnEllipsis", "pTooltip", "tooltipDisabled", "tooltipOptions", "appendTo", "ptTooltip", "pTooltipPT", "pTooltipUnstyled"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+}
+i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: AffixedIdInputComponent, decorators: [{
+            type: Component,
+            args: [{ selector: 'vcr-affixed-id-input', standalone: true, imports: [FormsModule, InputGroup, InputGroupAddon, InputText, Select, ButtonDirective, Tooltip], changeDetection: ChangeDetectionStrategy.OnPush, host: { '(focusout)': 'onFocusOut($event)' }, template: "<p-inputgroup\n  class=\"affixed-id__group\"\n  [class.affixed-id__group--invalid]=\"invalid() || duplicate()\"\n>\n  @if (effectiveAffixes().prefix.trim() !== '') {\n    <p-inputgroup-addon class=\"affixed-id__affix affixed-id__prefix\">{{ effectiveAffixes().prefix }}</p-inputgroup-addon>\n  }\n  <input\n    pInputText\n    [id]=\"inputId()\"\n    type=\"text\"\n    inputmode=\"numeric\"\n    autocomplete=\"off\"\n    [placeholder]=\"placeholder()\"\n    [value]=\"number()\"\n    (input)=\"onNumberInput($any($event.target))\"\n    [disabled]=\"disabled()\"\n    [attr.aria-invalid]=\"invalid() || duplicate()\"\n    [attr.aria-describedby]=\"inputId() + '-hint'\"\n  />\n  @if (suffixOptions(); as letters) {\n    @if ((affixes().suffixDash ?? '') !== '') {\n      <p-inputgroup-addon class=\"affixed-id__affix\">{{ affixes().suffixDash }}</p-inputgroup-addon>\n    }\n    <p-select\n      class=\"affixed-id__suffix-select\"\n      [ngModel]=\"suffixLetter()\"\n      (ngModelChange)=\"onSuffixLetter($event)\"\n      [options]=\"letters\"\n      [filter]=\"true\"\n      [showClear]=\"true\"\n      [placeholder]=\"affixes().suffixLabel || '\u2013'\"\n      [ariaLabel]=\"affixes().suffixLabel || 'Suffix'\"\n      [disabled]=\"disabled()\"\n      appendTo=\"body\"\n      (onHide)=\"onSuffixOverlayHide()\"\n    />\n  } @else if (isSuffixEditable()) {\n    <input\n      pInputText\n      class=\"affixed-id__suffix-input\"\n      type=\"text\"\n      autocomplete=\"off\"\n      [attr.maxlength]=\"suffixMaxLength()\"\n      [attr.aria-label]=\"affixes().suffixLabel || 'Suffix'\"\n      [placeholder]=\"affixes().suffixLabel ?? ''\"\n      [value]=\"suffix()\"\n      (input)=\"onSuffixInput($any($event.target))\"\n      (change)=\"onSuffixCommit()\"\n      [disabled]=\"disabled()\"\n    />\n  } @else if (effectiveAffixes().suffix.trim() !== '') {\n    <p-inputgroup-addon class=\"affixed-id__affix\">{{ effectiveAffixes().suffix }}</p-inputgroup-addon>\n  }\n  @if (lookup() !== null) {\n    <p-inputgroup-addon>\n      <button\n        pButton\n        type=\"button\"\n        [text]=\"true\"\n        severity=\"secondary\"\n        aria-label=\"Generate a new number\"\n        pTooltip=\"Generate a new number\"\n        tooltipPosition=\"top\"\n        appendTo=\"body\"\n        [disabled]=\"generating() || disabled()\"\n        (click)=\"regenerate()\"\n      >\n        <i class=\"pi pi-refresh\" aria-hidden=\"true\"></i>\n      </button>\n    </p-inputgroup-addon>\n  }\n</p-inputgroup>\n@if (isAffixed()) {\n  <small class=\"affixed-id__preview\">{{ entityLabel() }}: <strong>{{ preview() }}</strong></small>\n}\n<small\n  [id]=\"inputId() + '-hint'\"\n  class=\"affixed-id__hint\"\n  [class.affixed-id__hint--error]=\"duplicate()\"\n  [class.affixed-id__hint--empty]=\"!hasHint()\"\n  aria-live=\"polite\"\n>\n  @if (duplicate()) {\n    {{ entityLabel() }} {{ fullId() }} already exists in this account.\n  } @else if (checking()) {\n    Checking\u2026\n  } @else if (generating()) {\n    Generating a number\u2026\n  } @else if (generationFailed()) {\n    Couldn\u2019t generate a number. Enter one manually.\n  } @else if (checkFailed()) {\n    Couldn\u2019t verify this {{ entityLabel() }}. It will be checked when you save.\n  }\n</small>\n", styles: [":host{display:flex;flex-direction:column;gap:4px;width:100%;min-width:0}.affixed-id__group{display:flex;flex-wrap:wrap;row-gap:4px}.affixed-id__group input{flex:1 1 3.5rem;min-width:3.5rem}.affixed-id__group .p-inputgroupaddon{flex:0 0 auto;min-width:2.25rem;padding-inline:.5rem}.affixed-id__group .affixed-id__suffix-input{flex:0 1 6rem;min-width:3rem}.affixed-id__group .affixed-id__suffix-select{flex:0 0 5rem;min-width:0}.affixed-id__group .affixed-id__suffix-select{display:inline-flex;align-items:center}.affixed-id__group .affixed-id__suffix-select ::ng-deep .p-select-label{display:flex;align-items:center;line-height:normal;padding-top:0;padding-bottom:0;padding-inline:.5rem}.affixed-id__group .affixed-id__suffix-select ::ng-deep .p-select-dropdown{width:2rem}.affixed-id__group--invalid input,.affixed-id__group--invalid .p-inputgroupaddon{border-color:var(--p-red-600, #dc2626)}.affixed-id__affix{white-space:nowrap;font-weight:600;letter-spacing:.03em;-webkit-user-select:none;user-select:none}.affixed-id__preview{color:var(--text-color, #334155);font-size:13px}.affixed-id__hint{min-height:16px;color:var(--surface-500, #64748b);font-size:12px}.affixed-id__hint--empty{position:absolute;width:1px;height:1px;min-height:0;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}.affixed-id__hint--error{color:var(--p-red-600, #dc2626)}\n"] }]
+        }], ctorParameters: () => [], propDecorators: { affixes: [{ type: i0.Input, args: [{ isSignal: true, alias: "affixes", required: false }] }], lookup: [{ type: i0.Input, args: [{ isSignal: true, alias: "lookup", required: false }] }], autoGenerate: [{ type: i0.Input, args: [{ isSignal: true, alias: "autoGenerate", required: false }] }], inputId: [{ type: i0.Input, args: [{ isSignal: true, alias: "inputId", required: false }] }], placeholder: [{ type: i0.Input, args: [{ isSignal: true, alias: "placeholder", required: false }] }], entityLabel: [{ type: i0.Input, args: [{ isSignal: true, alias: "entityLabel", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], ownValue: [{ type: i0.Input, args: [{ isSignal: true, alias: "ownValue", required: false }] }], number: [{ type: i0.Input, args: [{ isSignal: true, alias: "number", required: false }] }, { type: i0.Output, args: ["numberChange"] }], suffix: [{ type: i0.Input, args: [{ isSignal: true, alias: "suffix", required: false }] }, { type: i0.Output, args: ["suffixChange"] }], duplicateChange: [{ type: i0.Output, args: ["duplicateChange"] }], blurred: [{ type: i0.Output, args: ["blurred"] }] } });
+
 /**
  * Draws a single-line text field.
  *
@@ -1731,9 +2193,92 @@ class TextFieldInputComponent {
     /** Fires once the user leaves the control. Text codecs are identity, so `value` is already
         settled by the time this emits — there is no rounding or repainting to wait for here. */
     blurred = output();
+    /** For a field with an ID format: the lookup and page state the host has. Optional — see
+        `FieldIdContext`. */
+    idContext = input(null, ...(ngDevMode ? [{ debugName: "idContext" }] : /* istanbul ignore next */ []));
+    /** For a field with an ID format: whether the ID is already used, as the lookup answers. */
+    duplicateChange = output();
     /** The control's `id`, which `FieldInputComponent`'s label points at. Falls back to a constant
         only so the attribute is never empty; a field with no key is a create in progress. */
     inputId = computed(() => this.fieldKey() || 'field-input', ...(ngDevMode ? [{ debugName: "inputId" }] : /* istanbul ignore next */ []));
+    /** The ID format resolved to locked text, or null for a plain text field. */
+    idAffixes = computed(() => {
+        const format = this.config().idFormat;
+        const context = this.idContext();
+        return format === null
+            ? null
+            : resolveIdAffixes(format, context?.resolveAffix, context?.prefixLead ?? '');
+    }, ...(ngDevMode ? [{ debugName: "idAffixes" }] : /* istanbul ignore next */ []));
+    /**
+     * The number and suffix being edited. Read from the value, except that clearing the number keeps
+     * a suffix already typed — the value is blank until there is a number, so it cannot carry one.
+     */
+    idState = linkedSignal({ ...(ngDevMode ? { debugName: "idState" } : /* istanbul ignore next */ {}), source: () => ({ affixes: this.idAffixes(), value: this.value() }),
+        computation: ({ affixes, value }, previous) => {
+            if (affixes === null)
+                return { number: '', suffix: '' };
+            if (value === '')
+                return { number: '', suffix: previous?.value.suffix ?? '' };
+            return splitIdValue(value, affixes) ?? { number: '', suffix: '' };
+        } });
+    idNumber = computed(() => this.idState().number, ...(ngDevMode ? [{ debugName: "idNumber" }] : /* istanbul ignore next */ []));
+    idSuffix = computed(() => this.idState().suffix, ...(ngDevMode ? [{ debugName: "idSuffix" }] : /* istanbul ignore next */ []));
+    /**
+     * Whether the stored value cannot have been built by the ID format (saved before the format, or
+     * the prefix since changed). Such a value is shown in the plain input, so it is never lost.
+     */
+    idValueUnreadable = computed(() => {
+        const affixes = this.idAffixes();
+        return affixes !== null && this.value() !== '' && splitIdValue(this.value(), affixes) === null;
+    }, ...(ngDevMode ? [{ debugName: "idValueUnreadable" }] : /* istanbul ignore next */ []));
+    drawsIdInput = computed(() => this.idAffixes() !== null && !this.idValueUnreadable(), ...(ngDevMode ? [{ debugName: "drawsIdInput" }] : /* istanbul ignore next */ []));
+    /** The value the field opened with: an empty one gets the next free number, a saved one keeps
+        its own and is not flagged as a duplicate of itself. Re-read only when the format changes. */
+    idOpenedWith = linkedSignal({ ...(ngDevMode ? { debugName: "idOpenedWith" } : /* istanbul ignore next */ {}), source: () => this.config().idFormat,
+        computation: () => untracked(() => this.value()) });
+    idEntityLabel = computed(() => this.idContext()?.entityLabel || 'ID', ...(ngDevMode ? [{ debugName: "idEntityLabel" }] : /* istanbul ignore next */ []));
+    /** The affixes the value was last built with, to rebuild it when they change. */
+    builtWith = null;
+    /** Whether the ID control was drawn, so leaving it for the plain input clears its duplicate. */
+    drewIdInput = false;
+    constructor() {
+        // A prefix or suffix that follows page state (Primary Use, the picked property) can change
+        // after the ID is filled. An ID built in this session moves to the new affixes and keeps its
+        // number; otherwise it would no longer split, drop to the plain input and be saved with the
+        // old prefix. A saved ID opened unchanged is left as it is, so it is never rewritten silently.
+        // Runs before the template is checked, so the ID control stays mounted and still knows
+        // whether the user typed the number (typed: kept; generated: replaced for the new prefix).
+        effect(() => {
+            const affixes = this.idAffixes();
+            untracked(() => {
+                const previous = this.builtWith;
+                this.builtWith = affixes;
+                if (affixes === null || previous === null || sameIdAffixes(previous, affixes))
+                    return;
+                const value = this.value();
+                if (value === '' || value === this.idOpenedWith())
+                    return;
+                if (splitIdValue(value, affixes) !== null)
+                    return;
+                const split = splitIdValue(value, previous);
+                if (split === null)
+                    return;
+                const rebuilt = idParts(split.number, split.suffix, affixes).full;
+                if (rebuilt !== value)
+                    this.value.set(rebuilt);
+            });
+        });
+        // The plain input checks nothing, so a duplicate the ID control reported must not linger and
+        // keep the host's Continue blocked with no message.
+        effect(() => {
+            const draws = this.drawsIdInput();
+            untracked(() => {
+                if (this.drewIdInput && !draws)
+                    this.duplicateChange.emit(false);
+                this.drewIdInput = draws;
+            });
+        });
+    }
     /** A mask applies to `Phone` alone, whatever a config saved before that rule holds — see
         `TextFieldConfig.mask`. */
     hasMask = computed(() => this.config().inputType === 'tel' && this.config().mask.trim() !== '', ...(ngDevMode ? [{ debugName: "hasMask" }] : /* istanbul ignore next */ []));
@@ -1820,7 +2365,7 @@ class TextFieldInputComponent {
     focused = signal(false, ...(ngDevMode ? [{ debugName: "focused" }] : /* istanbul ignore next */ []));
     /** Why the value does not fit an Email or URL input type, or `null` while it does. The same rule
         a consumer's form validates with — see `textValueFormatError`. */
-    formatError = computed(() => textValueFormatError(this.config().inputType, this.value()), ...(ngDevMode ? [{ debugName: "formatError" }] : /* istanbul ignore next */ []));
+    formatError = computed(() => textValueFormatError(this.idAffixes() !== null ? 'text' : this.config().inputType, this.value()), ...(ngDevMode ? [{ debugName: "formatError" }] : /* istanbul ignore next */ []));
     /**
      * Whether to show {@link formatError}: only while the user is not typing in the control.
      *
@@ -1848,6 +2393,21 @@ class TextFieldInputComponent {
     clear() {
         this.value.set('');
     }
+    onIdNumber(number) {
+        this.commitId(number, this.idSuffix());
+    }
+    onIdSuffix(suffix) {
+        this.commitId(this.idNumber(), suffix);
+    }
+    commitId(number, suffix) {
+        const affixes = this.idAffixes();
+        if (affixes === null)
+            return;
+        const full = idParts(number, suffix, affixes).full;
+        this.idState.set({ number, suffix });
+        if (full !== this.value())
+            this.value.set(full);
+    }
     /**
      * One edge's value, but only when that edge is in the mode asked for.
      *
@@ -1865,7 +2425,7 @@ class TextFieldInputComponent {
         return config[`${edge}Mode`] === mode ? config[edge].trim() : '';
     }
     static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: TextFieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
-    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: TextFieldInputComponent, isStandalone: true, selector: "vcr-text-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", blurred: "blurred" }, ngImport: i0, template: "<!-- Declared once and outlet-ed below, so the grouped, icon-wrapped and bare shapes cannot drift\n     apart in their bindings. -->\n<ng-template #plainInput>\n  <input\n    pInputText\n    [id]=\"inputId()\"\n    [type]=\"config().inputType\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (focus)=\"onFocus()\"\n    (blur)=\"onBlur()\"\n    [placeholder]=\"config().placeholder\"\n    [attr.maxlength]=\"config().maxLength\"\n    [attr.inputmode]=\"inputMode()\"\n    [attr.aria-describedby]=\"formatErrorShown() ? inputId() + '-format-error' : null\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid() || formatErrorShown()\"\n    [pSize]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The password shape. `p-password` is what draws the eye, and `feedback` is off because a\n     strength meter is advice about a password being chosen \u2014 this control edits a stored field\n     value, which is not the same thing. -->\n<ng-template #passwordInput>\n  <p-password\n    [inputId]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [maxLength]=\"config().maxLength ?? undefined\"\n    [toggleMask]=\"true\"\n    [feedback]=\"false\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The masked shape. Its own control rather than an attribute on the plain input, and like\n     `p-password` it wraps the real input in a host element of its own \u2014 which is why an affix\n     beside it has to be an input-group addon rather than an icon inside the field. See `shape`. -->\n<ng-template #maskInput>\n  <p-inputmask\n    [inputId]=\"inputId()\"\n    [mask]=\"config().mask\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- Which of the three the wrappers below draw. See `innerControl`. -->\n<ng-template #control>\n  @switch (innerControl()) {\n    @case ('mask') {\n      <ng-container [ngTemplateOutlet]=\"maskInput\" />\n    }\n    @case ('password') {\n      <ng-container [ngTemplateOutlet]=\"passwordInput\" />\n    }\n    @default {\n      <ng-container [ngTemplateOutlet]=\"plainInput\" />\n    }\n  }\n</ng-template>\n\n@switch (shape()) {\n  @case ('group') {\n    <p-inputgroup>\n      @if (prefixText() !== '') {\n        <p-inputgroup-addon>{{ prefixText() }}</p-inputgroup-addon>\n      } @else if (prefixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"prefixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixText() !== '') {\n        <p-inputgroup-addon>{{ suffixText() }}</p-inputgroup-addon>\n      } @else if (suffixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"suffixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      @if (hasClear()) {\n        <p-inputgroup-addon>\n          <button\n            type=\"button\"\n            class=\"text-field-input__clear\"\n            aria-label=\"Clear\"\n            [disabled]=\"disabled()\"\n            (click)=\"clear()\"\n          >\n            <i class=\"pi pi-times\" aria-hidden=\"true\"></i>\n          </button>\n        </p-inputgroup-addon>\n      }\n    </p-inputgroup>\n  }\n  @case ('iconfield') {\n    <p-iconfield [iconPosition]=\"iconPosition()\">\n      @if (prefixIcon() !== '') {\n        <p-inputicon [styleClass]=\"prefixIcon()\" />\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixIcon() !== '') {\n        <p-inputicon [styleClass]=\"suffixIcon()\" />\n      }\n    </p-iconfield>\n  }\n  @default {\n    <ng-container [ngTemplateOutlet]=\"control\" />\n  }\n}\n\n@if (formatErrorShown()) {\n  <!-- Only the plain input can hold an Email or URL type, so the other two controls never get\n       here. See `formatErrorShown` for when it appears. -->\n  <small class=\"text-field-input__error\" [id]=\"inputId() + '-format-error'\">\n    {{ formatError() }}\n  </small>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;min-width:0}:host ::ng-deep input,:host ::ng-deep .p-iconfield,:host ::ng-deep .p-inputmask,:host ::ng-deep .p-password{width:100%}.text-field-input__clear{display:flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}.text-field-input__clear:disabled{cursor:default;opacity:.5}.text-field-input__error{display:block;margin-top:.25rem;color:var(--error-color);font-size:12px}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.DefaultValueAccessor, selector: "input:not([type=checkbox])[formControlName],textarea[formControlName],input:not([type=checkbox])[formControl],textarea[formControl],input:not([type=checkbox])[ngModel],textarea[ngModel],[ngDefaultControl]" }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "directive", type: NgTemplateOutlet, selector: "[ngTemplateOutlet]", inputs: ["ngTemplateOutletContext", "ngTemplateOutlet", "ngTemplateOutletInjector"] }, { kind: "ngmodule", type: ButtonModule }, { kind: "component", type: IconField, selector: "p-iconfield, p-iconField, p-icon-field", inputs: ["hostName", "iconPosition", "styleClass"] }, { kind: "component", type: InputGroup, selector: "p-inputgroup, p-inputGroup, p-input-group", inputs: ["styleClass"] }, { kind: "component", type: InputGroupAddon, selector: "p-inputgroup-addon, p-inputGroupAddon", inputs: ["style", "styleClass"] }, { kind: "component", type: InputIcon, selector: "p-inputicon, p-inputIcon", inputs: ["hostName", "styleClass"] }, { kind: "component", type: InputMask, selector: "p-inputmask, p-inputMask, p-input-mask", inputs: ["type", "slotChar", "autoClear", "showClear", "style", "inputId", "styleClass", "placeholder", "tabindex", "title", "ariaLabel", "ariaLabelledBy", "ariaRequired", "readonly", "unmask", "characterPattern", "autofocus", "autocomplete", "keepBuffer", "mask"], outputs: ["onComplete", "onFocus", "onBlur", "onInput", "onKeydown", "onClear"] }, { kind: "directive", type: InputText, selector: "[pInputText]", inputs: ["hostName", "ptInputText", "pInputTextPT", "pInputTextUnstyled", "pSize", "variant", "fluid", "invalid"] }, { kind: "component", type: Password, selector: "p-password", inputs: ["ariaLabel", "ariaLabelledBy", "label", "promptLabel", "mediumRegex", "strongRegex", "weakLabel", "mediumLabel", "maxLength", "strongLabel", "inputId", "feedback", "toggleMask", "inputStyleClass", "styleClass", "inputStyle", "showTransitionOptions", "hideTransitionOptions", "autocomplete", "placeholder", "showClear", "autofocus", "tabindex", "appendTo", "motionOptions", "overlayOptions"], outputs: ["onFocus", "onBlur", "onClear"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: TextFieldInputComponent, isStandalone: true, selector: "vcr-text-field-input", inputs: { config: { classPropertyName: "config", publicName: "config", isSignal: true, isRequired: true, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null }, idContext: { classPropertyName: "idContext", publicName: "idContext", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", blurred: "blurred", duplicateChange: "duplicateChange" }, ngImport: i0, template: "<!-- Declared once and outlet-ed below, so the grouped, icon-wrapped and bare shapes cannot drift\n     apart in their bindings. -->\n<ng-template #plainInput>\n  <input\n    pInputText\n    [id]=\"inputId()\"\n    [type]=\"config().inputType\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (focus)=\"onFocus()\"\n    (blur)=\"onBlur()\"\n    [placeholder]=\"config().placeholder\"\n    [attr.maxlength]=\"config().maxLength\"\n    [attr.inputmode]=\"inputMode()\"\n    [attr.aria-describedby]=\"formatErrorShown() ? inputId() + '-format-error' : null\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid() || formatErrorShown()\"\n    [pSize]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The password shape. `p-password` is what draws the eye, and `feedback` is off because a\n     strength meter is advice about a password being chosen \u2014 this control edits a stored field\n     value, which is not the same thing. -->\n<ng-template #passwordInput>\n  <p-password\n    [inputId]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [maxLength]=\"config().maxLength ?? undefined\"\n    [toggleMask]=\"true\"\n    [feedback]=\"false\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The masked shape. Its own control rather than an attribute on the plain input, and like\n     `p-password` it wraps the real input in a host element of its own \u2014 which is why an affix\n     beside it has to be an input-group addon rather than an icon inside the field. See `shape`. -->\n<ng-template #maskInput>\n  <p-inputmask\n    [inputId]=\"inputId()\"\n    [mask]=\"config().mask\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- Which of the three the wrappers below draw. See `innerControl`. -->\n<ng-template #control>\n  @switch (innerControl()) {\n    @case ('mask') {\n      <ng-container [ngTemplateOutlet]=\"maskInput\" />\n    }\n    @case ('password') {\n      <ng-container [ngTemplateOutlet]=\"passwordInput\" />\n    }\n    @default {\n      <ng-container [ngTemplateOutlet]=\"plainInput\" />\n    }\n  }\n</ng-template>\n\n@if (drawsIdInput()) {\n  <!-- An ID format replaces every other arrangement: the prefix and suffix are the field's own,\n       locked, and the number is all the user types. See `TextFieldConfig.idFormat`. -->\n  <vcr-affixed-id-input\n    [affixes]=\"idAffixes()!\"\n    [lookup]=\"idContext()?.lookup ?? null\"\n    [autoGenerate]=\"idOpenedWith() === ''\"\n    [ownValue]=\"idOpenedWith()\"\n    [inputId]=\"inputId()\"\n    [placeholder]=\"config().placeholder\"\n    [entityLabel]=\"idEntityLabel()\"\n    [invalid]=\"invalid()\"\n    [disabled]=\"disabled()\"\n    [number]=\"idNumber()\"\n    (numberChange)=\"onIdNumber($event)\"\n    [suffix]=\"idSuffix()\"\n    (suffixChange)=\"onIdSuffix($event)\"\n    (duplicateChange)=\"duplicateChange.emit($event)\"\n    (blurred)=\"blurred.emit()\"\n  />\n} @else {\n@switch (shape()) {\n  @case ('group') {\n    <p-inputgroup>\n      @if (prefixText() !== '') {\n        <p-inputgroup-addon>{{ prefixText() }}</p-inputgroup-addon>\n      } @else if (prefixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"prefixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixText() !== '') {\n        <p-inputgroup-addon>{{ suffixText() }}</p-inputgroup-addon>\n      } @else if (suffixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"suffixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      @if (hasClear()) {\n        <p-inputgroup-addon>\n          <button\n            type=\"button\"\n            class=\"text-field-input__clear\"\n            aria-label=\"Clear\"\n            [disabled]=\"disabled()\"\n            (click)=\"clear()\"\n          >\n            <i class=\"pi pi-times\" aria-hidden=\"true\"></i>\n          </button>\n        </p-inputgroup-addon>\n      }\n    </p-inputgroup>\n  }\n  @case ('iconfield') {\n    <p-iconfield [iconPosition]=\"iconPosition()\">\n      @if (prefixIcon() !== '') {\n        <p-inputicon [styleClass]=\"prefixIcon()\" />\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixIcon() !== '') {\n        <p-inputicon [styleClass]=\"suffixIcon()\" />\n      }\n    </p-iconfield>\n  }\n  @default {\n    <ng-container [ngTemplateOutlet]=\"control\" />\n  }\n}\n\n}\n\n@if (formatErrorShown() && !drawsIdInput()) {\n  <!-- Only the plain input can hold an Email or URL type, so the other two controls never get\n       here. See `formatErrorShown` for when it appears. -->\n  <small class=\"text-field-input__error\" [id]=\"inputId() + '-format-error'\">\n    {{ formatError() }}\n  </small>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;min-width:0}:host ::ng-deep input,:host ::ng-deep .p-iconfield,:host ::ng-deep .p-inputmask,:host ::ng-deep .p-password{width:100%}.text-field-input__clear{display:flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}.text-field-input__clear:disabled{cursor:default;opacity:.5}.text-field-input__error{display:block;margin-top:.25rem;color:var(--error-color);font-size:12px}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.DefaultValueAccessor, selector: "input:not([type=checkbox])[formControlName],textarea[formControlName],input:not([type=checkbox])[formControl],textarea[formControl],input:not([type=checkbox])[ngModel],textarea[ngModel],[ngDefaultControl]" }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.RequiredValidator, selector: ":not([type=checkbox])[required][formControlName],:not([type=checkbox])[required][formControl],:not([type=checkbox])[required][ngModel]", inputs: ["required"] }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "directive", type: NgTemplateOutlet, selector: "[ngTemplateOutlet]", inputs: ["ngTemplateOutletContext", "ngTemplateOutlet", "ngTemplateOutletInjector"] }, { kind: "ngmodule", type: ButtonModule }, { kind: "component", type: IconField, selector: "p-iconfield, p-iconField, p-icon-field", inputs: ["hostName", "iconPosition", "styleClass"] }, { kind: "component", type: InputGroup, selector: "p-inputgroup, p-inputGroup, p-input-group", inputs: ["styleClass"] }, { kind: "component", type: InputGroupAddon, selector: "p-inputgroup-addon, p-inputGroupAddon", inputs: ["style", "styleClass"] }, { kind: "component", type: InputIcon, selector: "p-inputicon, p-inputIcon", inputs: ["hostName", "styleClass"] }, { kind: "component", type: InputMask, selector: "p-inputmask, p-inputMask, p-input-mask", inputs: ["type", "slotChar", "autoClear", "showClear", "style", "inputId", "styleClass", "placeholder", "tabindex", "title", "ariaLabel", "ariaLabelledBy", "ariaRequired", "readonly", "unmask", "characterPattern", "autofocus", "autocomplete", "keepBuffer", "mask"], outputs: ["onComplete", "onFocus", "onBlur", "onInput", "onKeydown", "onClear"] }, { kind: "directive", type: InputText, selector: "[pInputText]", inputs: ["hostName", "ptInputText", "pInputTextPT", "pInputTextUnstyled", "pSize", "variant", "fluid", "invalid"] }, { kind: "component", type: Password, selector: "p-password", inputs: ["ariaLabel", "ariaLabelledBy", "label", "promptLabel", "mediumRegex", "strongRegex", "weakLabel", "mediumLabel", "maxLength", "strongLabel", "inputId", "feedback", "toggleMask", "inputStyleClass", "styleClass", "inputStyle", "showTransitionOptions", "hideTransitionOptions", "autocomplete", "placeholder", "showClear", "autofocus", "tabindex", "appendTo", "motionOptions", "overlayOptions"], outputs: ["onFocus", "onBlur", "onClear"] }, { kind: "component", type: AffixedIdInputComponent, selector: "vcr-affixed-id-input", inputs: ["affixes", "lookup", "autoGenerate", "inputId", "placeholder", "entityLabel", "invalid", "disabled", "ownValue", "number", "suffix"], outputs: ["numberChange", "suffixChange", "duplicateChange", "blurred"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
 }
 i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: TextFieldInputComponent, decorators: [{
             type: Component,
@@ -1880,8 +2440,13 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
                         InputMask,
                         InputText,
                         Password,
-                    ], changeDetection: ChangeDetectionStrategy.OnPush, template: "<!-- Declared once and outlet-ed below, so the grouped, icon-wrapped and bare shapes cannot drift\n     apart in their bindings. -->\n<ng-template #plainInput>\n  <input\n    pInputText\n    [id]=\"inputId()\"\n    [type]=\"config().inputType\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (focus)=\"onFocus()\"\n    (blur)=\"onBlur()\"\n    [placeholder]=\"config().placeholder\"\n    [attr.maxlength]=\"config().maxLength\"\n    [attr.inputmode]=\"inputMode()\"\n    [attr.aria-describedby]=\"formatErrorShown() ? inputId() + '-format-error' : null\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid() || formatErrorShown()\"\n    [pSize]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The password shape. `p-password` is what draws the eye, and `feedback` is off because a\n     strength meter is advice about a password being chosen \u2014 this control edits a stored field\n     value, which is not the same thing. -->\n<ng-template #passwordInput>\n  <p-password\n    [inputId]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [maxLength]=\"config().maxLength ?? undefined\"\n    [toggleMask]=\"true\"\n    [feedback]=\"false\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The masked shape. Its own control rather than an attribute on the plain input, and like\n     `p-password` it wraps the real input in a host element of its own \u2014 which is why an affix\n     beside it has to be an input-group addon rather than an icon inside the field. See `shape`. -->\n<ng-template #maskInput>\n  <p-inputmask\n    [inputId]=\"inputId()\"\n    [mask]=\"config().mask\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- Which of the three the wrappers below draw. See `innerControl`. -->\n<ng-template #control>\n  @switch (innerControl()) {\n    @case ('mask') {\n      <ng-container [ngTemplateOutlet]=\"maskInput\" />\n    }\n    @case ('password') {\n      <ng-container [ngTemplateOutlet]=\"passwordInput\" />\n    }\n    @default {\n      <ng-container [ngTemplateOutlet]=\"plainInput\" />\n    }\n  }\n</ng-template>\n\n@switch (shape()) {\n  @case ('group') {\n    <p-inputgroup>\n      @if (prefixText() !== '') {\n        <p-inputgroup-addon>{{ prefixText() }}</p-inputgroup-addon>\n      } @else if (prefixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"prefixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixText() !== '') {\n        <p-inputgroup-addon>{{ suffixText() }}</p-inputgroup-addon>\n      } @else if (suffixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"suffixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      @if (hasClear()) {\n        <p-inputgroup-addon>\n          <button\n            type=\"button\"\n            class=\"text-field-input__clear\"\n            aria-label=\"Clear\"\n            [disabled]=\"disabled()\"\n            (click)=\"clear()\"\n          >\n            <i class=\"pi pi-times\" aria-hidden=\"true\"></i>\n          </button>\n        </p-inputgroup-addon>\n      }\n    </p-inputgroup>\n  }\n  @case ('iconfield') {\n    <p-iconfield [iconPosition]=\"iconPosition()\">\n      @if (prefixIcon() !== '') {\n        <p-inputicon [styleClass]=\"prefixIcon()\" />\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixIcon() !== '') {\n        <p-inputicon [styleClass]=\"suffixIcon()\" />\n      }\n    </p-iconfield>\n  }\n  @default {\n    <ng-container [ngTemplateOutlet]=\"control\" />\n  }\n}\n\n@if (formatErrorShown()) {\n  <!-- Only the plain input can hold an Email or URL type, so the other two controls never get\n       here. See `formatErrorShown` for when it appears. -->\n  <small class=\"text-field-input__error\" [id]=\"inputId() + '-format-error'\">\n    {{ formatError() }}\n  </small>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;min-width:0}:host ::ng-deep input,:host ::ng-deep .p-iconfield,:host ::ng-deep .p-inputmask,:host ::ng-deep .p-password{width:100%}.text-field-input__clear{display:flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}.text-field-input__clear:disabled{cursor:default;opacity:.5}.text-field-input__error{display:block;margin-top:.25rem;color:var(--error-color);font-size:12px}\n"] }]
-        }], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], blurred: [{ type: i0.Output, args: ["blurred"] }] } });
+                        AffixedIdInputComponent,
+                    ], changeDetection: ChangeDetectionStrategy.OnPush, template: "<!-- Declared once and outlet-ed below, so the grouped, icon-wrapped and bare shapes cannot drift\n     apart in their bindings. -->\n<ng-template #plainInput>\n  <input\n    pInputText\n    [id]=\"inputId()\"\n    [type]=\"config().inputType\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (focus)=\"onFocus()\"\n    (blur)=\"onBlur()\"\n    [placeholder]=\"config().placeholder\"\n    [attr.maxlength]=\"config().maxLength\"\n    [attr.inputmode]=\"inputMode()\"\n    [attr.aria-describedby]=\"formatErrorShown() ? inputId() + '-format-error' : null\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid() || formatErrorShown()\"\n    [pSize]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The password shape. `p-password` is what draws the eye, and `feedback` is off because a\n     strength meter is advice about a password being chosen \u2014 this control edits a stored field\n     value, which is not the same thing. -->\n<ng-template #passwordInput>\n  <p-password\n    [inputId]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [maxLength]=\"config().maxLength ?? undefined\"\n    [toggleMask]=\"true\"\n    [feedback]=\"false\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- The masked shape. Its own control rather than an attribute on the plain input, and like\n     `p-password` it wraps the real input in a host element of its own \u2014 which is why an affix\n     beside it has to be an input-group addon rather than an icon inside the field. See `shape`. -->\n<ng-template #maskInput>\n  <p-inputmask\n    [inputId]=\"inputId()\"\n    [mask]=\"config().mask\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"onValueChange($event)\"\n    (onBlur)=\"blurred.emit()\"\n    [placeholder]=\"config().placeholder\"\n    [required]=\"required()\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n    [size]=\"primeSize()\"\n  />\n</ng-template>\n\n<!-- Which of the three the wrappers below draw. See `innerControl`. -->\n<ng-template #control>\n  @switch (innerControl()) {\n    @case ('mask') {\n      <ng-container [ngTemplateOutlet]=\"maskInput\" />\n    }\n    @case ('password') {\n      <ng-container [ngTemplateOutlet]=\"passwordInput\" />\n    }\n    @default {\n      <ng-container [ngTemplateOutlet]=\"plainInput\" />\n    }\n  }\n</ng-template>\n\n@if (drawsIdInput()) {\n  <!-- An ID format replaces every other arrangement: the prefix and suffix are the field's own,\n       locked, and the number is all the user types. See `TextFieldConfig.idFormat`. -->\n  <vcr-affixed-id-input\n    [affixes]=\"idAffixes()!\"\n    [lookup]=\"idContext()?.lookup ?? null\"\n    [autoGenerate]=\"idOpenedWith() === ''\"\n    [ownValue]=\"idOpenedWith()\"\n    [inputId]=\"inputId()\"\n    [placeholder]=\"config().placeholder\"\n    [entityLabel]=\"idEntityLabel()\"\n    [invalid]=\"invalid()\"\n    [disabled]=\"disabled()\"\n    [number]=\"idNumber()\"\n    (numberChange)=\"onIdNumber($event)\"\n    [suffix]=\"idSuffix()\"\n    (suffixChange)=\"onIdSuffix($event)\"\n    (duplicateChange)=\"duplicateChange.emit($event)\"\n    (blurred)=\"blurred.emit()\"\n  />\n} @else {\n@switch (shape()) {\n  @case ('group') {\n    <p-inputgroup>\n      @if (prefixText() !== '') {\n        <p-inputgroup-addon>{{ prefixText() }}</p-inputgroup-addon>\n      } @else if (prefixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"prefixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixText() !== '') {\n        <p-inputgroup-addon>{{ suffixText() }}</p-inputgroup-addon>\n      } @else if (suffixIcon() !== '') {\n        <p-inputgroup-addon><i [class]=\"suffixIcon()\" aria-hidden=\"true\"></i></p-inputgroup-addon>\n      }\n      @if (hasClear()) {\n        <p-inputgroup-addon>\n          <button\n            type=\"button\"\n            class=\"text-field-input__clear\"\n            aria-label=\"Clear\"\n            [disabled]=\"disabled()\"\n            (click)=\"clear()\"\n          >\n            <i class=\"pi pi-times\" aria-hidden=\"true\"></i>\n          </button>\n        </p-inputgroup-addon>\n      }\n    </p-inputgroup>\n  }\n  @case ('iconfield') {\n    <p-iconfield [iconPosition]=\"iconPosition()\">\n      @if (prefixIcon() !== '') {\n        <p-inputicon [styleClass]=\"prefixIcon()\" />\n      }\n      <ng-container [ngTemplateOutlet]=\"control\" />\n      @if (suffixIcon() !== '') {\n        <p-inputicon [styleClass]=\"suffixIcon()\" />\n      }\n    </p-iconfield>\n  }\n  @default {\n    <ng-container [ngTemplateOutlet]=\"control\" />\n  }\n}\n\n}\n\n@if (formatErrorShown() && !drawsIdInput()) {\n  <!-- Only the plain input can hold an Email or URL type, so the other two controls never get\n       here. See `formatErrorShown` for when it appears. -->\n  <small class=\"text-field-input__error\" [id]=\"inputId() + '-format-error'\">\n    {{ formatError() }}\n  </small>\n}\n", styles: ["@charset \"UTF-8\";:host{display:block;min-width:0}:host ::ng-deep input,:host ::ng-deep .p-iconfield,:host ::ng-deep .p-inputmask,:host ::ng-deep .p-password{width:100%}.text-field-input__clear{display:flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}.text-field-input__clear:disabled{cursor:default;opacity:.5}.text-field-input__error{display:block;margin-top:.25rem;color:var(--error-color);font-size:12px}\n"] }]
+        }], ctorParameters: () => [], propDecorators: { config: [{ type: i0.Input, args: [{ isSignal: true, alias: "config", required: true }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], blurred: [{ type: i0.Output, args: ["blurred"] }], idContext: [{ type: i0.Input, args: [{ isSignal: true, alias: "idContext", required: false }] }], duplicateChange: [{ type: i0.Output, args: ["duplicateChange"] }] } });
+/** Whether two resolved affixes build the same IDs. */
+function sameIdAffixes(a, b) {
+    return a.prefix === b.prefix && a.suffix === b.suffix && a.suffixEditable === b.suffixEditable;
+}
 
 /** The format each native contenteditable shortcut applies, so one whose button is off can be
     refused. Keyed by `KeyboardEvent.key`, lower-cased. */
@@ -3192,7 +3757,14 @@ function isUrlField(fieldType, fieldConfig) {
     if (descriptor?.kind !== 'text') {
         return false;
     }
-    return descriptor.parse(fieldConfig).inputType === 'url';
+    return effectiveTextInputType(descriptor.parse(fieldConfig)) === 'url';
+}
+/**
+ * The input type a text field actually behaves as: `text` while its ID format is on, because the
+ * ID control replaces the input type (an `OFF-1` is neither an address nor a link).
+ */
+function effectiveTextInputType(config) {
+    return config.idFormat !== null ? 'text' : config.inputType;
 }
 /**
  * Whether `<vcr-field-input [showActions]="true">` draws its own ✕/✓ for this field — today a
@@ -3251,7 +3823,7 @@ function fieldValueFormatError(fieldType, fieldConfig, value) {
     if (descriptor?.kind !== 'text') {
         return null;
     }
-    return textValueFormatError(descriptor.parse(fieldConfig).inputType, value);
+    return textValueFormatError(effectiveTextInputType(descriptor.parse(fieldConfig)), value);
 }
 /**
  * A stored value as it should be *read* — the string to show where a control is not being drawn,
@@ -3802,6 +4374,17 @@ class FieldInputComponent {
     required = input(false, ...(ngDevMode ? [{ debugName: "required" }] : /* istanbul ignore next */ []));
     disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
     invalid = input(false, ...(ngDevMode ? [{ debugName: "invalid" }] : /* istanbul ignore next */ []));
+    /**
+     * How large the control is drawn, overriding the size in the field's own `fieldConfig`.
+     *
+     * **Unset by default, and unset means "no change".** Each field type already carries a `size` in
+     * its config (`'small'` when the saved config does not say; a config saved as `''` means
+     * `'medium'`), and that is what a host got before this input existed — so leaving it unset keeps
+     * every existing host's rendering exactly as it was, whichever size each field was authored at.
+     * Set it only to draw a set of fields at one size regardless of how they were configured. It has
+     * no effect on a field type with no size (`DatePicker`, `Media`).
+     */
+    size = input(undefined, ...(ngDevMode ? [{ debugName: "size" }] : /* istanbul ignore next */ []));
     /** The wire value — a string for every field type, whatever the control works in. */
     value = model('', ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
     /**
@@ -3829,6 +4412,23 @@ class FieldInputComponent {
     saveRequested = output();
     /** Re-emitted from the renderer's ✕. Silent for a renderer that draws none. */
     cancelRequested = output();
+    /**
+     * For a `Text` field with an ID format: the lookup that generates and checks IDs, and how to read
+     * a prefix or suffix bound to page state. Ignored by every other field. See `FieldIdContext`.
+     */
+    idContext = input(null, ...(ngDevMode ? [{ debugName: "idContext" }] : /* istanbul ignore next */ []));
+    /** `idContext` as the renderer gets it: messages name the ID after the field's label unless
+        the host gave `entityLabel`. */
+    rendererIdContext = computed(() => {
+        const context = this.idContext();
+        if (context === null)
+            return null;
+        const label = this.label().trim();
+        return context.entityLabel || label === '' ? context : { ...context, entityLabel: label };
+    }, ...(ngDevMode ? [{ debugName: "rendererIdContext" }] : /* istanbul ignore next */ []));
+    /** Whether the ID typed is already used, as `idContext.lookup` answers. Silent for any other
+        field, or without a lookup. A host can hold its save while this is true. */
+    duplicateChange = output();
     /** Where the chosen renderer is created. Absent while the field type is unregistered, since
         the anchor only exists inside that branch of the template. */
     anchor = viewChild('anchor', { ...(ngDevMode ? { debugName: "anchor" } : /* istanbul ignore next */ {}), read: ViewContainerRef });
@@ -3841,7 +4441,15 @@ class FieldInputComponent {
      * fresh object per read would be a new input value on every change-detection pass, which for an
      * `OnPush` child is an endless re-render.
      */
-    config = computed(() => this.descriptor()?.parse(this.fieldConfig()) ?? null, ...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
+    config = computed(() => {
+        const parsed = this.descriptor()?.parse(this.fieldConfig()) ?? null;
+        const size = this.size();
+        // Only a config that has a size is touched, so every other field type keeps the object it
+        // parsed to — and with `size` unset nothing is copied at all.
+        return size !== undefined && typeof parsed === 'object' && parsed !== null && 'size' in parsed
+            ? { ...parsed, size }
+            : parsed;
+    }, ...(ngDevMode ? [{ debugName: "config" }] : /* istanbul ignore next */ []));
     /** The wire value decoded into whatever the control works in. A `computed` for the same
         identity reason as {@link config} — a `Date` rebuilt per read would never settle. */
     decoded = computed(() => {
@@ -3922,6 +4530,14 @@ class FieldInputComponent {
                             outputBinding(RENDERER_BINDINGS.cancelRequested, () => this.cancelRequested.emit()),
                         ]
                         : []),
+                    ...(declaresInput(descriptor.renderer, RENDERER_BINDINGS.idContext)
+                        ? [inputBinding(RENDERER_BINDINGS.idContext, () => this.rendererIdContext())]
+                        : []),
+                    ...(declaresOutput(descriptor.renderer, RENDERER_BINDINGS.duplicateChange)
+                        ? [
+                            outputBinding(RENDERER_BINDINGS.duplicateChange, (duplicate) => this.duplicateChange.emit(duplicate)),
+                        ]
+                        : []),
                 ],
             });
             onCleanup(() => anchor.clear());
@@ -3944,12 +4560,12 @@ class FieldInputComponent {
         this.value.set(descriptor.serialize(next, this.config()));
     }
     static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: FieldInputComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
-    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: FieldInputComponent, isStandalone: true, selector: "vcr-field-input", inputs: { fieldType: { classPropertyName: "fieldType", publicName: "fieldType", isSignal: true, isRequired: true, transformFunction: null }, fieldConfig: { classPropertyName: "fieldConfig", publicName: "fieldConfig", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, label: { classPropertyName: "label", publicName: "label", isSignal: true, isRequired: false, transformFunction: null }, showLabel: { classPropertyName: "showLabel", publicName: "showLabel", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, showActions: { classPropertyName: "showActions", publicName: "showActions", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", blurred: "blurred", optionAdded: "optionAdded", saveRequested: "saveRequested", cancelRequested: "cancelRequested" }, viewQueries: [{ propertyName: "anchor", first: true, predicate: ["anchor"], descendants: true, read: ViewContainerRef, isSignal: true }], ngImport: i0, template: "@if (isRegistered()) {\n  @if (showLabel() && label() !== '') {\n    <label class=\"field-input__label\" [attr.for]=\"inputId()\">\n      {{ label() }}\n      @if (required()) {\n        <span class=\"field-input__required\" aria-hidden=\"true\">*</span>\n      }\n    </label>\n  }\n\n  <!-- The chosen renderer is created here \u2014 see the effect in this component's constructor. -->\n  <ng-container #anchor />\n\n  @if (storedValueUnreadable()) {\n    <small class=\"field-input__hint\">\n      The saved value isn\u2019t something this field can show. It is left untouched until you edit this\n      control.\n    </small>\n  }\n} @else {\n  <!-- The same bare textarea every field type used before this module existed. An unregistered\n       field type is not an error: it is a type nobody has written a renderer for yet, and the\n       platform stores its value as a string like every other. -->\n  <textarea\n    pTextarea\n    rows=\"5\"\n    [id]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"value.set($event ?? '')\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n  ></textarea>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:8px;min-width:0}.field-input__label{color:var(--content-color);font-size:13px;font-weight:600}.field-input__required{color:var(--error-color);margin-left:2px}.field-input__hint{color:var(--surface-500);font-size:12px;line-height:1.5}:host ::ng-deep textarea{width:100%}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.DefaultValueAccessor, selector: "input:not([type=checkbox])[formControlName],textarea[formControlName],input:not([type=checkbox])[formControl],textarea[formControl],input:not([type=checkbox])[ngModel],textarea[ngModel],[ngDefaultControl]" }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "directive", type: Textarea, selector: "[pTextarea], [pInputTextarea]", inputs: ["pTextareaPT", "pTextareaUnstyled", "autoResize", "pSize", "variant", "fluid", "invalid"], outputs: ["onResize"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: FieldInputComponent, isStandalone: true, selector: "vcr-field-input", inputs: { fieldType: { classPropertyName: "fieldType", publicName: "fieldType", isSignal: true, isRequired: true, transformFunction: null }, fieldConfig: { classPropertyName: "fieldConfig", publicName: "fieldConfig", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, label: { classPropertyName: "label", publicName: "label", isSignal: true, isRequired: false, transformFunction: null }, showLabel: { classPropertyName: "showLabel", publicName: "showLabel", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, invalid: { classPropertyName: "invalid", publicName: "invalid", isSignal: true, isRequired: false, transformFunction: null }, size: { classPropertyName: "size", publicName: "size", isSignal: true, isRequired: false, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null }, showActions: { classPropertyName: "showActions", publicName: "showActions", isSignal: true, isRequired: false, transformFunction: null }, idContext: { classPropertyName: "idContext", publicName: "idContext", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", blurred: "blurred", optionAdded: "optionAdded", saveRequested: "saveRequested", cancelRequested: "cancelRequested", duplicateChange: "duplicateChange" }, viewQueries: [{ propertyName: "anchor", first: true, predicate: ["anchor"], descendants: true, read: ViewContainerRef, isSignal: true }], ngImport: i0, template: "@if (isRegistered()) {\n  @if (showLabel() && label() !== '') {\n    <label class=\"field-input__label\" [attr.for]=\"inputId()\">\n      {{ label() }}\n      @if (required()) {\n        <span class=\"field-input__required\" aria-hidden=\"true\">*</span>\n      }\n    </label>\n  }\n\n  <!-- The chosen renderer is created here \u2014 see the effect in this component's constructor. -->\n  <ng-container #anchor />\n\n  @if (storedValueUnreadable()) {\n    <small class=\"field-input__hint\">\n      The saved value isn\u2019t something this field can show. It is left untouched until you edit this\n      control.\n    </small>\n  }\n} @else {\n  <!-- The same bare textarea every field type used before this module existed. An unregistered\n       field type is not an error: it is a type nobody has written a renderer for yet, and the\n       platform stores its value as a string like every other. -->\n  <textarea\n    pTextarea\n    rows=\"5\"\n    [id]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"value.set($event ?? '')\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n  ></textarea>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:8px;min-width:0}.field-input__label{color:var(--content-color);font-size:13px;font-weight:600}.field-input__required{color:var(--error-color);margin-left:2px}.field-input__hint{color:var(--surface-500);font-size:12px;line-height:1.5}:host ::ng-deep textarea{width:100%}\n"], dependencies: [{ kind: "ngmodule", type: FormsModule }, { kind: "directive", type: i1.DefaultValueAccessor, selector: "input:not([type=checkbox])[formControlName],textarea[formControlName],input:not([type=checkbox])[formControl],textarea[formControl],input:not([type=checkbox])[ngModel],textarea[ngModel],[ngDefaultControl]" }, { kind: "directive", type: i1.NgControlStatus, selector: "[formControlName],[ngModel],[formControl]" }, { kind: "directive", type: i1.NgModel, selector: "[ngModel]:not([formControlName]):not([formControl])", inputs: ["name", "disabled", "ngModel", "ngModelOptions"], outputs: ["ngModelChange"], exportAs: ["ngModel"] }, { kind: "directive", type: Textarea, selector: "[pTextarea], [pInputTextarea]", inputs: ["pTextareaPT", "pTextareaUnstyled", "autoResize", "pSize", "variant", "fluid", "invalid"], outputs: ["onResize"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
 }
 i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: FieldInputComponent, decorators: [{
             type: Component,
             args: [{ selector: 'vcr-field-input', standalone: true, imports: [FormsModule, Textarea], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (isRegistered()) {\n  @if (showLabel() && label() !== '') {\n    <label class=\"field-input__label\" [attr.for]=\"inputId()\">\n      {{ label() }}\n      @if (required()) {\n        <span class=\"field-input__required\" aria-hidden=\"true\">*</span>\n      }\n    </label>\n  }\n\n  <!-- The chosen renderer is created here \u2014 see the effect in this component's constructor. -->\n  <ng-container #anchor />\n\n  @if (storedValueUnreadable()) {\n    <small class=\"field-input__hint\">\n      The saved value isn\u2019t something this field can show. It is left untouched until you edit this\n      control.\n    </small>\n  }\n} @else {\n  <!-- The same bare textarea every field type used before this module existed. An unregistered\n       field type is not an error: it is a type nobody has written a renderer for yet, and the\n       platform stores its value as a string like every other. -->\n  <textarea\n    pTextarea\n    rows=\"5\"\n    [id]=\"inputId()\"\n    [ngModel]=\"value()\"\n    [ngModelOptions]=\"{ standalone: true }\"\n    (ngModelChange)=\"value.set($event ?? '')\"\n    [disabled]=\"disabled()\"\n    [invalid]=\"invalid()\"\n  ></textarea>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:8px;min-width:0}.field-input__label{color:var(--content-color);font-size:13px;font-weight:600}.field-input__required{color:var(--error-color);margin-left:2px}.field-input__hint{color:var(--surface-500);font-size:12px;line-height:1.5}:host ::ng-deep textarea{width:100%}\n"] }]
-        }], ctorParameters: () => [], propDecorators: { fieldType: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldType", required: true }] }], fieldConfig: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldConfig", required: false }] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], label: [{ type: i0.Input, args: [{ isSignal: true, alias: "label", required: false }] }], showLabel: [{ type: i0.Input, args: [{ isSignal: true, alias: "showLabel", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], blurred: [{ type: i0.Output, args: ["blurred"] }], optionAdded: [{ type: i0.Output, args: ["optionAdded"] }], showActions: [{ type: i0.Input, args: [{ isSignal: true, alias: "showActions", required: false }] }], saveRequested: [{ type: i0.Output, args: ["saveRequested"] }], cancelRequested: [{ type: i0.Output, args: ["cancelRequested"] }], anchor: [{ type: i0.ViewChild, args: ['anchor', { ...{ read: ViewContainerRef }, isSignal: true }] }] } });
+        }], ctorParameters: () => [], propDecorators: { fieldType: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldType", required: true }] }], fieldConfig: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldConfig", required: false }] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], label: [{ type: i0.Input, args: [{ isSignal: true, alias: "label", required: false }] }], showLabel: [{ type: i0.Input, args: [{ isSignal: true, alias: "showLabel", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], invalid: [{ type: i0.Input, args: [{ isSignal: true, alias: "invalid", required: false }] }], size: [{ type: i0.Input, args: [{ isSignal: true, alias: "size", required: false }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], blurred: [{ type: i0.Output, args: ["blurred"] }], optionAdded: [{ type: i0.Output, args: ["optionAdded"] }], showActions: [{ type: i0.Input, args: [{ isSignal: true, alias: "showActions", required: false }] }], saveRequested: [{ type: i0.Output, args: ["saveRequested"] }], cancelRequested: [{ type: i0.Output, args: ["cancelRequested"] }], idContext: [{ type: i0.Input, args: [{ isSignal: true, alias: "idContext", required: false }] }], duplicateChange: [{ type: i0.Output, args: ["duplicateChange"] }], anchor: [{ type: i0.ViewChild, args: ['anchor', { ...{ read: ViewContainerRef }, isSignal: true }] }] } });
 
 /**
  * How many characters of a URL are shown before it is elided.
@@ -4012,6 +4628,8 @@ class FieldValueComponent {
     disabled = input(false, ...(ngDevMode ? [{ debugName: "disabled" }] : /* istanbul ignore next */ []));
     /** Never enters edit mode — the value reads as text and nothing invites a click. */
     readonly = input(false, ...(ngDevMode ? [{ debugName: "readonly" }] : /* istanbul ignore next */ []));
+    /** Passed to the control while editing — see `FieldInputComponent.idContext`. */
+    idContext = input(null, ...(ngDevMode ? [{ debugName: "idContext" }] : /* istanbul ignore next */ []));
     /** The wire value. Written only when an edit is committed, never on open or cancel. */
     value = model('', ...(ngDevMode ? [{ debugName: "value" }] : /* istanbul ignore next */ []));
     /**
@@ -4141,12 +4759,12 @@ class FieldValueComponent {
         this.beginEdit();
     }
     static ɵfac = i0.ɵɵngDeclareFactory({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: FieldValueComponent, deps: [], target: i0.ɵɵFactoryTarget.Component });
-    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: FieldValueComponent, isStandalone: true, selector: "vcr-field-value", inputs: { fieldType: { classPropertyName: "fieldType", publicName: "fieldType", isSignal: true, isRequired: true, transformFunction: null }, fieldConfig: { classPropertyName: "fieldConfig", publicName: "fieldConfig", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, label: { classPropertyName: "label", publicName: "label", isSignal: true, isRequired: false, transformFunction: null }, showLabel: { classPropertyName: "showLabel", publicName: "showLabel", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, readonly: { classPropertyName: "readonly", publicName: "readonly", isSignal: true, isRequired: false, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", committed: "committed" }, viewQueries: [{ propertyName: "editAnchor", first: true, predicate: ["editAnchor"], descendants: true, isSignal: true }], ngImport: i0, template: "@if (showLabel() && label() !== '') {\n  <span class=\"field-value__label\">\n    {{ label() }}\n    @if (required()) {\n      <span class=\"field-value__required\" aria-hidden=\"true\">*</span>\n    }\n  </span>\n}\n\n@if (editing()) {\n  <!-- Blur is listened for on the wrapper rather than on the facade for the kinds that have no\n       `blurred` output at all; `commitsOnBlur` decides which signal actually ends the edit. -->\n  <div #editAnchor class=\"field-value__edit\" (keydown)=\"onKeydown($event)\">\n    <vcr-field-input\n      [fieldType]=\"fieldType()\"\n      [fieldConfig]=\"fieldConfig()\"\n      [fieldKey]=\"fieldKey()\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [value]=\"draft()\"\n      (valueChange)=\"onDraftChange($event)\"\n      (blurred)=\"commit()\"\n    />\n  </div>\n} @else if (isUrl()) {\n  <div class=\"field-value__row\">\n    <a\n      class=\"field-value__link\"\n      [href]=\"href()\"\n      [title]=\"href()\"\n      target=\"_blank\"\n      rel=\"noopener noreferrer\"\n      >{{ linkText() }}</a\n    >\n    @if (canEdit()) {\n      <!-- A separate affordance on purpose: clicking the link itself has to follow it, so the\n           value cannot double as the thing that opens the control the way plain text does. -->\n      <button\n        type=\"button\"\n        class=\"field-value__edit-button\"\n        [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n        (click)=\"beginEdit()\"\n      >\n        Edit\n      </button>\n    }\n  </div>\n} @else if (canEdit()) {\n  <div\n    class=\"field-value__read field-value__read--editable\"\n    role=\"button\"\n    tabindex=\"0\"\n    [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n    (click)=\"beginEdit()\"\n    (keydown)=\"onReadKeydown($event)\"\n  >\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n} @else {\n  <div class=\"field-value__read\">\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:4px;min-width:0}.field-value__label{color:var(--content-color);font-size:13px;font-weight:600}.field-value__required{color:var(--error-color);margin-left:2px}.field-value__row{align-items:center;display:flex;gap:8px;min-width:0}.field-value__read{border:1px solid transparent;border-radius:6px;color:var(--content-color);font-size:14px;min-height:34px;overflow-wrap:anywhere;padding:6px 8px}.field-value__read--editable{cursor:text}.field-value__read--editable:hover,.field-value__read--editable:focus-visible{border-color:var(--surface-300)}:host ::ng-deep .field-value__rich ul,:host ::ng-deep .field-value__rich ol{margin:0;padding-inline-start:20px}.field-value__placeholder{color:var(--surface-500)}.field-value__link{color:var(--primary-color);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-value__edit-button{background:none;border:none;color:var(--surface-500);cursor:pointer;flex:none;font-size:12px;padding:2px 4px;text-decoration:underline}.field-value__edit-button:hover{color:var(--content-color)}\n"], dependencies: [{ kind: "component", type: FieldInputComponent, selector: "vcr-field-input", inputs: ["fieldType", "fieldConfig", "fieldKey", "label", "showLabel", "required", "disabled", "invalid", "value", "showActions"], outputs: ["valueChange", "blurred", "optionAdded", "saveRequested", "cancelRequested"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
+    static ɵcmp = i0.ɵɵngDeclareComponent({ minVersion: "17.0.0", version: "21.2.23", type: FieldValueComponent, isStandalone: true, selector: "vcr-field-value", inputs: { fieldType: { classPropertyName: "fieldType", publicName: "fieldType", isSignal: true, isRequired: true, transformFunction: null }, fieldConfig: { classPropertyName: "fieldConfig", publicName: "fieldConfig", isSignal: true, isRequired: false, transformFunction: null }, fieldKey: { classPropertyName: "fieldKey", publicName: "fieldKey", isSignal: true, isRequired: false, transformFunction: null }, label: { classPropertyName: "label", publicName: "label", isSignal: true, isRequired: false, transformFunction: null }, showLabel: { classPropertyName: "showLabel", publicName: "showLabel", isSignal: true, isRequired: false, transformFunction: null }, required: { classPropertyName: "required", publicName: "required", isSignal: true, isRequired: false, transformFunction: null }, disabled: { classPropertyName: "disabled", publicName: "disabled", isSignal: true, isRequired: false, transformFunction: null }, readonly: { classPropertyName: "readonly", publicName: "readonly", isSignal: true, isRequired: false, transformFunction: null }, idContext: { classPropertyName: "idContext", publicName: "idContext", isSignal: true, isRequired: false, transformFunction: null }, value: { classPropertyName: "value", publicName: "value", isSignal: true, isRequired: false, transformFunction: null } }, outputs: { value: "valueChange", committed: "committed" }, viewQueries: [{ propertyName: "editAnchor", first: true, predicate: ["editAnchor"], descendants: true, isSignal: true }], ngImport: i0, template: "@if (showLabel() && label() !== '') {\n  <span class=\"field-value__label\">\n    {{ label() }}\n    @if (required()) {\n      <span class=\"field-value__required\" aria-hidden=\"true\">*</span>\n    }\n  </span>\n}\n\n@if (editing()) {\n  <!-- Blur is listened for on the wrapper rather than on the facade for the kinds that have no\n       `blurred` output at all; `commitsOnBlur` decides which signal actually ends the edit. -->\n  <div #editAnchor class=\"field-value__edit\" (keydown)=\"onKeydown($event)\">\n    <vcr-field-input\n      [fieldType]=\"fieldType()\"\n      [fieldConfig]=\"fieldConfig()\"\n      [fieldKey]=\"fieldKey()\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [value]=\"draft()\"\n      [idContext]=\"idContext()\"\n      (valueChange)=\"onDraftChange($event)\"\n      (blurred)=\"commit()\"\n    />\n  </div>\n} @else if (isUrl()) {\n  <div class=\"field-value__row\">\n    <a\n      class=\"field-value__link\"\n      [href]=\"href()\"\n      [title]=\"href()\"\n      target=\"_blank\"\n      rel=\"noopener noreferrer\"\n      >{{ linkText() }}</a\n    >\n    @if (canEdit()) {\n      <!-- A separate affordance on purpose: clicking the link itself has to follow it, so the\n           value cannot double as the thing that opens the control the way plain text does. -->\n      <button\n        type=\"button\"\n        class=\"field-value__edit-button\"\n        [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n        (click)=\"beginEdit()\"\n      >\n        Edit\n      </button>\n    }\n  </div>\n} @else if (canEdit()) {\n  <div\n    class=\"field-value__read field-value__read--editable\"\n    role=\"button\"\n    tabindex=\"0\"\n    [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n    (click)=\"beginEdit()\"\n    (keydown)=\"onReadKeydown($event)\"\n  >\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n} @else {\n  <div class=\"field-value__read\">\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:4px;min-width:0}.field-value__label{color:var(--content-color);font-size:13px;font-weight:600}.field-value__required{color:var(--error-color);margin-left:2px}.field-value__row{align-items:center;display:flex;gap:8px;min-width:0}.field-value__read{border:1px solid transparent;border-radius:6px;color:var(--content-color);font-size:14px;min-height:34px;overflow-wrap:anywhere;padding:6px 8px}.field-value__read--editable{cursor:text}.field-value__read--editable:hover,.field-value__read--editable:focus-visible{border-color:var(--surface-300)}:host ::ng-deep .field-value__rich ul,:host ::ng-deep .field-value__rich ol{margin:0;padding-inline-start:20px}.field-value__placeholder{color:var(--surface-500)}.field-value__link{color:var(--primary-color);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-value__edit-button{background:none;border:none;color:var(--surface-500);cursor:pointer;flex:none;font-size:12px;padding:2px 4px;text-decoration:underline}.field-value__edit-button:hover{color:var(--content-color)}\n"], dependencies: [{ kind: "component", type: FieldInputComponent, selector: "vcr-field-input", inputs: ["fieldType", "fieldConfig", "fieldKey", "label", "showLabel", "required", "disabled", "invalid", "size", "value", "showActions", "idContext"], outputs: ["valueChange", "blurred", "optionAdded", "saveRequested", "cancelRequested", "duplicateChange"] }], changeDetection: i0.ChangeDetectionStrategy.OnPush });
 }
 i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImport: i0, type: FieldValueComponent, decorators: [{
             type: Component,
-            args: [{ selector: 'vcr-field-value', standalone: true, imports: [FieldInputComponent], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (showLabel() && label() !== '') {\n  <span class=\"field-value__label\">\n    {{ label() }}\n    @if (required()) {\n      <span class=\"field-value__required\" aria-hidden=\"true\">*</span>\n    }\n  </span>\n}\n\n@if (editing()) {\n  <!-- Blur is listened for on the wrapper rather than on the facade for the kinds that have no\n       `blurred` output at all; `commitsOnBlur` decides which signal actually ends the edit. -->\n  <div #editAnchor class=\"field-value__edit\" (keydown)=\"onKeydown($event)\">\n    <vcr-field-input\n      [fieldType]=\"fieldType()\"\n      [fieldConfig]=\"fieldConfig()\"\n      [fieldKey]=\"fieldKey()\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [value]=\"draft()\"\n      (valueChange)=\"onDraftChange($event)\"\n      (blurred)=\"commit()\"\n    />\n  </div>\n} @else if (isUrl()) {\n  <div class=\"field-value__row\">\n    <a\n      class=\"field-value__link\"\n      [href]=\"href()\"\n      [title]=\"href()\"\n      target=\"_blank\"\n      rel=\"noopener noreferrer\"\n      >{{ linkText() }}</a\n    >\n    @if (canEdit()) {\n      <!-- A separate affordance on purpose: clicking the link itself has to follow it, so the\n           value cannot double as the thing that opens the control the way plain text does. -->\n      <button\n        type=\"button\"\n        class=\"field-value__edit-button\"\n        [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n        (click)=\"beginEdit()\"\n      >\n        Edit\n      </button>\n    }\n  </div>\n} @else if (canEdit()) {\n  <div\n    class=\"field-value__read field-value__read--editable\"\n    role=\"button\"\n    tabindex=\"0\"\n    [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n    (click)=\"beginEdit()\"\n    (keydown)=\"onReadKeydown($event)\"\n  >\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n} @else {\n  <div class=\"field-value__read\">\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:4px;min-width:0}.field-value__label{color:var(--content-color);font-size:13px;font-weight:600}.field-value__required{color:var(--error-color);margin-left:2px}.field-value__row{align-items:center;display:flex;gap:8px;min-width:0}.field-value__read{border:1px solid transparent;border-radius:6px;color:var(--content-color);font-size:14px;min-height:34px;overflow-wrap:anywhere;padding:6px 8px}.field-value__read--editable{cursor:text}.field-value__read--editable:hover,.field-value__read--editable:focus-visible{border-color:var(--surface-300)}:host ::ng-deep .field-value__rich ul,:host ::ng-deep .field-value__rich ol{margin:0;padding-inline-start:20px}.field-value__placeholder{color:var(--surface-500)}.field-value__link{color:var(--primary-color);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-value__edit-button{background:none;border:none;color:var(--surface-500);cursor:pointer;flex:none;font-size:12px;padding:2px 4px;text-decoration:underline}.field-value__edit-button:hover{color:var(--content-color)}\n"] }]
-        }], ctorParameters: () => [], propDecorators: { fieldType: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldType", required: true }] }], fieldConfig: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldConfig", required: false }] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], label: [{ type: i0.Input, args: [{ isSignal: true, alias: "label", required: false }] }], showLabel: [{ type: i0.Input, args: [{ isSignal: true, alias: "showLabel", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], readonly: [{ type: i0.Input, args: [{ isSignal: true, alias: "readonly", required: false }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], committed: [{ type: i0.Output, args: ["committed"] }], editAnchor: [{ type: i0.ViewChild, args: ['editAnchor', { isSignal: true }] }] } });
+            args: [{ selector: 'vcr-field-value', standalone: true, imports: [FieldInputComponent], changeDetection: ChangeDetectionStrategy.OnPush, template: "@if (showLabel() && label() !== '') {\n  <span class=\"field-value__label\">\n    {{ label() }}\n    @if (required()) {\n      <span class=\"field-value__required\" aria-hidden=\"true\">*</span>\n    }\n  </span>\n}\n\n@if (editing()) {\n  <!-- Blur is listened for on the wrapper rather than on the facade for the kinds that have no\n       `blurred` output at all; `commitsOnBlur` decides which signal actually ends the edit. -->\n  <div #editAnchor class=\"field-value__edit\" (keydown)=\"onKeydown($event)\">\n    <vcr-field-input\n      [fieldType]=\"fieldType()\"\n      [fieldConfig]=\"fieldConfig()\"\n      [fieldKey]=\"fieldKey()\"\n      [required]=\"required()\"\n      [disabled]=\"disabled()\"\n      [value]=\"draft()\"\n      [idContext]=\"idContext()\"\n      (valueChange)=\"onDraftChange($event)\"\n      (blurred)=\"commit()\"\n    />\n  </div>\n} @else if (isUrl()) {\n  <div class=\"field-value__row\">\n    <a\n      class=\"field-value__link\"\n      [href]=\"href()\"\n      [title]=\"href()\"\n      target=\"_blank\"\n      rel=\"noopener noreferrer\"\n      >{{ linkText() }}</a\n    >\n    @if (canEdit()) {\n      <!-- A separate affordance on purpose: clicking the link itself has to follow it, so the\n           value cannot double as the thing that opens the control the way plain text does. -->\n      <button\n        type=\"button\"\n        class=\"field-value__edit-button\"\n        [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n        (click)=\"beginEdit()\"\n      >\n        Edit\n      </button>\n    }\n  </div>\n} @else if (canEdit()) {\n  <div\n    class=\"field-value__read field-value__read--editable\"\n    role=\"button\"\n    tabindex=\"0\"\n    [attr.aria-label]=\"'Edit ' + (label() || fieldKey())\"\n    (click)=\"beginEdit()\"\n    (keydown)=\"onReadKeydown($event)\"\n  >\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n} @else {\n  <div class=\"field-value__read\">\n    @if (isEmpty()) {\n      <span class=\"field-value__placeholder\">\u2014</span>\n    } @else if (isRichText()) {\n      <div class=\"field-value__rich\" [innerHTML]=\"richTextHtml()\"></div>\n    } @else {\n      {{ displayText() }}\n    }\n  </div>\n}\n", styles: [":host{display:flex;flex-direction:column;gap:4px;min-width:0}.field-value__label{color:var(--content-color);font-size:13px;font-weight:600}.field-value__required{color:var(--error-color);margin-left:2px}.field-value__row{align-items:center;display:flex;gap:8px;min-width:0}.field-value__read{border:1px solid transparent;border-radius:6px;color:var(--content-color);font-size:14px;min-height:34px;overflow-wrap:anywhere;padding:6px 8px}.field-value__read--editable{cursor:text}.field-value__read--editable:hover,.field-value__read--editable:focus-visible{border-color:var(--surface-300)}:host ::ng-deep .field-value__rich ul,:host ::ng-deep .field-value__rich ol{margin:0;padding-inline-start:20px}.field-value__placeholder{color:var(--surface-500)}.field-value__link{color:var(--primary-color);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-value__edit-button{background:none;border:none;color:var(--surface-500);cursor:pointer;flex:none;font-size:12px;padding:2px 4px;text-decoration:underline}.field-value__edit-button:hover{color:var(--content-color)}\n"] }]
+        }], ctorParameters: () => [], propDecorators: { fieldType: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldType", required: true }] }], fieldConfig: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldConfig", required: false }] }], fieldKey: [{ type: i0.Input, args: [{ isSignal: true, alias: "fieldKey", required: false }] }], label: [{ type: i0.Input, args: [{ isSignal: true, alias: "label", required: false }] }], showLabel: [{ type: i0.Input, args: [{ isSignal: true, alias: "showLabel", required: false }] }], required: [{ type: i0.Input, args: [{ isSignal: true, alias: "required", required: false }] }], disabled: [{ type: i0.Input, args: [{ isSignal: true, alias: "disabled", required: false }] }], readonly: [{ type: i0.Input, args: [{ isSignal: true, alias: "readonly", required: false }] }], idContext: [{ type: i0.Input, args: [{ isSignal: true, alias: "idContext", required: false }] }], value: [{ type: i0.Input, args: [{ isSignal: true, alias: "value", required: false }] }, { type: i0.Output, args: ["valueChange"] }], committed: [{ type: i0.Output, args: ["committed"] }], editAnchor: [{ type: i0.ViewChild, args: ['editAnchor', { isSignal: true }] }] } });
 
 /*
  * Public API Surface of velocity-core-renderer
@@ -4159,5 +4777,5 @@ i0.ɵɵngDeclareClassMetadata({ minVersion: "12.0.0", version: "21.2.23", ngImpo
  * Generated bundle index. Do not edit.
  */
 
-export { CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, eraseFieldRenderer, fieldInputDrawsActions, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, isCurrencyCodeShaped, isFieldRendererRegistered, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, richTextToPlainText, richTextToolbarButtons, selectFieldRenderer, sortChoiceOptions, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml, withChoiceOptionAdded };
+export { AffixedIdInputComponent, CHECKBOX_TYPES, CHECKBOX_TYPE_OPTIONS, CHECKBOX_VALUE_SEPARATOR, CHOICE_ORIENTATIONS, CHOICE_ORIENTATION_OPTIONS, CHOICE_SORTS, CHOICE_SORT_OPTIONS, CURRENCY_DISPLAYS, CURRENCY_DISPLAY_OPTIONS, CheckboxFieldInputComponent, CurrencyFieldInputComponent, DATE_FORMAT_OPTIONS, DATE_ICON_DISPLAYS, DATE_ICON_DISPLAY_OPTIONS, DATE_LIMITS, DATE_LIMIT_OPTIONS, DATE_SELECTION_MODES, DATE_SELECTION_MODE_OPTIONS, DATE_VIEWS, DATE_VIEW_OPTIONS, DEFAULT_CHECKBOX_FIELD_CONFIG, DEFAULT_CURRENCY_FIELD_CONFIG, DEFAULT_DATE_FIELD_CONFIG, DEFAULT_MEDIA_FIELD_CONFIG, DEFAULT_NUMBER_FIELD_CONFIG, DEFAULT_RADIO_FIELD_CONFIG, DEFAULT_SELECT_FIELD_CONFIG, DEFAULT_TEXTAREA_FIELD_CONFIG, DEFAULT_TEXT_FIELD_CONFIG, DEFAULT_TEXT_ID_FORMAT, DateFieldInputComponent, FIELD_DEFINITION_TYPE_RENDERERS, FIELD_INPUT_SIZES, FIELD_INPUT_SIZE_OPTIONS, FieldInputComponent, FieldValueComponent, HOUR_FORMATS, HOUR_FORMAT_OPTIONS, ID_FORMAT_PARTS, ID_SUFFIX_INPUTS, ID_SUFFIX_LETTERS, INVALID_EMAIL_MESSAGE, INVALID_URL_MESSAGE, LABEL_POSITIONS, LABEL_POSITION_OPTIONS, MEDIA_FILE_EXTENSIONS, MEDIA_FILE_EXTENSION_OPTIONS, MEDIA_PREVIEW_SIZES, MEDIA_PREVIEW_SIZE_OPTIONS, MediaFieldInputComponent, NUMBER_BUTTON_LAYOUTS, NUMBER_BUTTON_LAYOUT_OPTIONS, NUMBER_NEGATIVE_FORMATS, NUMBER_NEGATIVE_FORMAT_OPTIONS, NUMBER_ROUNDING_RULES, NUMBER_ROUNDING_RULE_OPTIONS, NumberFieldInputComponent, RENDERER_BINDINGS, RETIRED_TEXT_INPUT_TYPE_LABELS, RadioFieldInputComponent, RichTextEditorComponent, SELECT_MODES, SELECT_MODE_OPTIONS, SELECT_VALUE_SEPARATOR, STORED_FIELD_INPUT_SIZES, SelectFieldInputComponent, TEXT_AFFIX_MODES, TEXT_AFFIX_MODE_OPTIONS, TEXT_INPUT_TYPES, TEXT_INPUT_TYPE_OPTIONS, TextFieldInputComponent, TextareaFieldInputComponent, URL_DISPLAY_MAX_LENGTH, checkboxFieldRenderer, clearedCheckboxModeSettings, collectExtras, composeId, currencyFieldRenderer, dateFieldRenderer, dateFormatNamesDay, dateFormatToInputMask, effectiveTextInputType, eraseFieldRenderer, fieldInputDrawsActions, fieldValueFormatError, findFieldRenderer, formatCalculatedValue, formatDateByPattern, formatFieldValue, formatLocalDate, formatLocalDateTime, formatPlainNumber, hasBlankChoiceLabel, hasBlankChoiceValue, hasDuplicateChoiceLabel, hasDuplicateChoiceValue, hasIdAffixes, idAffixFallbackText, idFormatIssue, idFormatPreview, idParts, idPartsOfValue, isCurrencyCodeShaped, isFieldRendererRegistered, isIdFormatValid, isUrlField, looksLikeHtml, mediaFieldRenderer, normalizeFieldInputSize, numberFieldRenderer, numberOfId, parseCheckboxFieldConfig, parseChoiceOptions, parseCurrencyFieldConfig, parseDateFieldConfig, parseDaylessDate, parseFiniteNumber, parseLocalDateish, parseLooseBoolean, parseMediaFieldConfig, parseNumberFieldConfig, parseRadioFieldConfig, parseSelectFieldConfig, parseTextFieldConfig, parseTextIdFormat, parseTextareaFieldConfig, plainTextToHtml, radioFieldRenderer, readArray, readBoolean, readConfigSource, readNullableNumber, readNumber, readOption, readRecord, readString, resolveFieldControl, resolveIdAffixes, richTextToPlainText, richTextToolbarButtons, sanitizeEditableSuffix, sanitizeIdNumber, selectFieldRenderer, sortChoiceOptions, splitEditableSuffix, splitIdValue, textFieldRenderer, textValueFormatError, textareaFieldRenderer, toFieldConfigJson, toRichTextHtml, withChoiceOptionAdded };
 //# sourceMappingURL=velocity-core-renderer.mjs.map
